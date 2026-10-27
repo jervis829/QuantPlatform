@@ -1,5 +1,5 @@
-import QuantConsolePage from "../page";
+import LegacyConsole from "../../components/legacy-console";
 
 export default function SystemRouteBridge() {
-  return <QuantConsolePage />;
+  return <LegacyConsole defaultTab="risk" />;
 }
