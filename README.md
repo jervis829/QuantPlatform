@@ -92,8 +92,16 @@ git checkout arena/326d1ecd-quantplatform
 
 #### 第 2 步：安装 Python 后端环境并启动 API 服务（终端 1）
 
+> **macOS 用户注意**：macOS 系统自带的 `/usr/bin/python3` 版本为 `3.9.6`，而本项目要求 **Python `>= 3.11`**（使用了 `StrEnum` 等现代类型特性）。如果你在 macOS 上遇到 `3.9.6 not in '>=3.11'`，请先用 Homebrew 安装 Python 3.12 并重建虚拟环境：
+> ```bash
+> brew install python@3.12
+> rm -rf .venv
+> $(brew --prefix python@3.12)/bin/python3.12 -m venv .venv
+> source .venv/bin/activate
+> ```
+
 ```bash
-# 1. 创建并激活虚拟环境
+# 1. 创建并激活虚拟环境（Linux 或默认 python3 已 >= 3.11 时）
 python3 -m venv .venv
 source .venv/bin/activate
 
