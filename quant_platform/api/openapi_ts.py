@@ -60,3 +60,15 @@ def generate_typescript_types_from_openapi(openapi_doc: dict[str, Any]) -> str:
         lines.append(f'  | "{p}"{suffix}')
     lines.append("")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    import sys
+
+    from quant_platform.api.app import create_app
+
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("frontend/src/types/openapi.generated.ts")
+    app_inst = create_app(db_url="sqlite:///:memory:")
+    target.write_text(generate_typescript_types_from_openapi(app_inst.openapi()), encoding="utf-8")
+

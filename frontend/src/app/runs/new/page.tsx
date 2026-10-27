@@ -67,6 +67,8 @@ function LaunchRunCenterInner() {
   const [completedResult, setCompletedResult] = useState<LaunchRunResponse | null>(
     null
   );
+  const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
+  const [canceledNotice, setCanceledNotice] = useState<string | null>(null);
 
   const strategiesQuery = useQuery({
     queryKey: ["strategies", apiKey],
@@ -116,7 +118,40 @@ function LaunchRunCenterInner() {
     setLiveAccountAck(false);
     setLiveTypedPhrase("");
     setCompletedResult(null);
+    setStreamingRunId(null);
+    setCanceledNotice(null);
   }, [envMode, selectedStrategyId, selectedVersionId]);
+
+  const statusQuery = useQuery({
+    queryKey: ["run-status", envMode, streamingRunId],
+    queryFn: () => quantApi.getRunStatus(apiKey, envMode, streamingRunId!),
+    enabled: Boolean(streamingRunId),
+    refetchInterval: (q) => (q.state.data?.status === "RUNNING" ? 250 : false),
+  });
+
+  useEffect(() => {
+    const st = statusQuery.data;
+    if (!st || !streamingRunId) return;
+    if (st.status === "COMPLETED") {
+      setCompletedResult({
+        run_id: st.run_id,
+        env: st.env,
+        status: st.status,
+        strategy_id: st.strategy_id,
+        version_id: st.version_id,
+      });
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["strategies"] });
+      void queryClient.invalidateQueries({ queryKey: ["system-overview"] });
+    } else if (st.status === "STOPPED" || st.status === "CANCELED") {
+      setCanceledNotice(
+        `已通过 CancellationToken 中断运行 ${st.run_id}（已处理 ${st.processed_bars}/${st.total_bars} 根 K 线）`
+      );
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    }
+  }, [queryClient, statusQuery.data, streamingRunId]);
 
   const preflightQuery = useQuery({
     queryKey: [
@@ -144,8 +179,10 @@ function LaunchRunCenterInner() {
   });
 
   const launchMutation = useMutation({
-    mutationFn: () =>
-      quantApi.launchRun(apiKey, {
+    mutationFn: () => {
+      setCanceledNotice(null);
+      setCompletedResult(null);
+      return quantApi.launchRun(apiKey, {
         strategy_id: selectedStrategyId,
         version_id: selectedVersionId,
         env: envMode,
@@ -154,12 +191,30 @@ function LaunchRunCenterInner() {
         initial_usdt: initialUsdt,
         leverage,
         margin_mode: "CROSS",
-      }),
+        async_mode: envMode === "backtest",
+        step_delay_ms: envMode === "backtest" ? 6 : 0,
+      });
+    },
     onSuccess: (res) => {
-      setCompletedResult(res);
+      if (res.status === "RUNNING") {
+        setStreamingRunId(res.run_id);
+      } else {
+        setCompletedResult(res);
+      }
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
       void queryClient.invalidateQueries({ queryKey: ["strategies"] });
       void queryClient.invalidateQueries({ queryKey: ["system-overview"] });
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => quantApi.cancelRun(apiKey, envMode, streamingRunId!),
+    onSuccess: (st) => {
+      setCanceledNotice(
+        `已主动取消运行 ${st.run_id}（状态: ${st.status}，已处理 ${st.processed_bars}/${st.total_bars} 根 K 线）`
+      );
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
     },
   });
 
@@ -377,11 +432,27 @@ function LaunchRunCenterInner() {
         </div>
       )}
 
-      {launchMutation.isPending ? (
+      {canceledNotice && (
+        <div className="rounded-lg border border-amber-500/45 bg-amber-950/25 p-3.5 text-xs text-amber-200 font-mono">
+          {canceledNotice}
+        </div>
+      )}
+
+      {launchMutation.isPending || Boolean(streamingRunId) ? (
         <RunLoadingState
           title={`正在执行 ${envMode.toUpperCase()} 运行 (${selectedStrategyId})`}
-          currentStageLabel="同构策略上下文驱动与逐笔账本持久化"
-          progressPct={72}
+          currentStageLabel={
+            statusQuery.data
+              ? `${statusQuery.data.stage} · 实时流式驱动与账本落库`
+              : "同构策略上下文驱动与逐笔账本持久化"
+          }
+          progressPct={statusQuery.data?.progress_pct ?? 8}
+          processedBars={statusQuery.data?.processed_bars}
+          totalBars={statusQuery.data?.total_bars}
+          elapsedMs={statusQuery.data?.elapsed_ms}
+          estimatedRemainingMs={statusQuery.data?.estimated_remaining_ms}
+          onCancel={streamingRunId ? () => cancelMutation.mutate() : undefined}
+          canceling={cancelMutation.isPending}
         />
       ) : (
         <>

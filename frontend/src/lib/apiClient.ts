@@ -108,6 +108,7 @@ export interface OrdersQueryParams {
   sort_dir?: string;
   limit?: number;
   offset?: number;
+  cursor?: string;
 }
 
 export const quantApi = {

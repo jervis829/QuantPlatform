@@ -5,6 +5,9 @@ import { AlertTriangle, CheckCircle2, GitCompare, RotateCcw, Save } from "lucide
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
+type FieldGroupKey = "signal" | "risk_sizing" | "general";
+type DangerLevelKey = "safe" | "caution" | "high";
+
 interface JsonSchemaProperty {
   title?: string;
   description?: string;
@@ -15,9 +18,11 @@ interface JsonSchemaProperty {
   maximum?: number;
   exclusiveMinimum?: number;
   exclusiveMaximum?: number;
+  ui_group?: FieldGroupKey;
+  unit?: string;
+  danger_level?: DangerLevelKey;
+  danger_hint?: string;
 }
-
-type FieldGroupKey = "signal" | "risk_sizing" | "general";
 
 interface ParsedSchemaField {
   key: string;
@@ -32,11 +37,15 @@ interface ParsedSchemaField {
   exclusiveMax?: number;
   unitHint: string;
   group: FieldGroupKey;
+  dangerLevel: DangerLevelKey;
+  dangerHint: string;
   isDangerParam: boolean;
+  explicitMeta: boolean;
 }
 
-function classifyFieldGroup(key: string): {
+function classifyFieldGroupFallback(key: string): {
   group: FieldGroupKey;
+  dangerLevel: DangerLevelKey;
   isDangerParam: boolean;
   unitHint: string;
 } {
@@ -54,15 +63,15 @@ function classifyFieldGroup(key: string): {
       unitHint = "USDT";
     else if (lower.includes("pct") || lower.includes("drawdown") || lower.includes("stop"))
       unitHint = "% / 比例";
-    return { group: "risk_sizing", isDangerParam: true, unitHint };
+    return { group: "risk_sizing", dangerLevel: "high", isDangerParam: true, unitHint };
   }
 
   if (/(window|period|lookback|fast|slow|ema|sma|rsi|zscore|threshold|bar)/.test(lower)) {
     const unitHint = /(window|period|lookback|fast|slow|bar)/.test(lower) ? "Bars (K线根数)" : "";
-    return { group: "signal", isDangerParam: false, unitHint };
+    return { group: "signal", dangerLevel: "safe", isDangerParam: false, unitHint };
   }
 
-  return { group: "general", isDangerParam: false, unitHint: "" };
+  return { group: "general", dangerLevel: "safe", isDangerParam: false, unitHint: "" };
 }
 
 function parsePydanticJsonSchema(schema: Record<string, unknown>): ParsedSchemaField[] {
@@ -79,7 +88,23 @@ function parsePydanticJsonSchema(schema: Record<string, unknown>): ParsedSchemaF
     else if (rawType === "number") fieldType = "number";
     else if (rawType === "boolean") fieldType = "boolean";
 
-    const { group, isDangerParam, unitHint } = classifyFieldGroup(key);
+    const fallback = classifyFieldGroupFallback(key);
+    const hasExplicit = Boolean(
+      prop.ui_group || prop.unit || prop.danger_level || prop.danger_hint
+    );
+    const group: FieldGroupKey =
+      prop.ui_group && ["signal", "risk_sizing", "general"].includes(prop.ui_group)
+        ? prop.ui_group
+        : fallback.group;
+    const dangerLevel: DangerLevelKey =
+      prop.danger_level && ["safe", "caution", "high"].includes(prop.danger_level)
+        ? prop.danger_level
+        : fallback.dangerLevel;
+    const unitHint = prop.unit !== undefined ? prop.unit : fallback.unitHint;
+    const dangerHint = prop.danger_hint ?? "";
+    const isDangerParam =
+      dangerLevel === "high" || dangerLevel === "caution" || group === "risk_sizing";
+
     return {
       key,
       title: prop.title || key,
@@ -93,7 +118,10 @@ function parsePydanticJsonSchema(schema: Record<string, unknown>): ParsedSchemaF
       exclusiveMax: prop.exclusiveMaximum,
       unitHint,
       group,
+      dangerLevel,
+      dangerHint,
       isDangerParam,
+      explicitMeta: hasExplicit,
     };
   });
 }
@@ -359,12 +387,22 @@ export function SchemaParamEditor({
                         <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[10px] text-slate-400">
                           <span>
                             默认: {f.defaultValue !== undefined ? String(f.defaultValue) : "必填"}
+                            {f.explicitMeta && (
+                              <span className="ml-1.5 rounded bg-sky-500/15 px-1 py-0.2 text-[9px] text-sky-300">
+                                ui_param
+                              </span>
+                            )}
                           </span>
                           {rangeParts.length > 0 && <span>范围 [{rangeParts.join(", ")}]</span>}
                         </div>
 
                         {f.description && (
                           <p className="text-[11px] text-slate-400">{f.description}</p>
+                        )}
+                        {f.dangerHint && (
+                          <p className="text-[11px] text-amber-300/90">
+                            ⚠ {f.dangerHint}
+                          </p>
                         )}
                         {errMsg && (
                           <p className="text-[11px] font-medium text-rose-400">{errMsg}</p>

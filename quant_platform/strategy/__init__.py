@@ -8,6 +8,7 @@ from quant_platform.strategy.registry import (
     extract_param_schema_and_defaults,
 )
 from quant_platform.strategy.sandbox import ContainerStrategySandbox
+from quant_platform.strategy.ui_meta import ui_param
 from quant_platform.strategy.version_store import StrategyVersionStore, compute_unified_diff
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "extract_param_schema_and_defaults",
     "rsi",
     "sma",
+    "ui_param",
     "zscore",
 ]

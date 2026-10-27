@@ -16,15 +16,34 @@ export interface ChartEquityPoint {
   drawdown_pct: number;
 }
 
+export interface ChartRoundTripPair {
+  trade_index: number;
+  side: string;
+  qty: string;
+  entry_time_sec: number;
+  exit_time_sec: number;
+  entry_price: number;
+  exit_price: number;
+  net_pnl: number;
+  fees: number;
+  holding_ms: number;
+}
+
 export interface ChartTradeMarker {
   time_sec: number;
+  ts_ms?: number;
   side: string;
+  action_label?: string;
+  signal_reason?: string;
   price: string;
   qty: string;
+  quote_qty?: string;
   client_order_id: string;
   fill_id: string;
   realized_pnl: string;
   fee: string;
+  slippage_bps?: string;
+  position_after?: string;
   liquidity: string;
 }
 
@@ -126,6 +145,8 @@ export interface LaunchRunRequest {
   initial_usdt?: string;
   leverage?: string;
   margin_mode?: string;
+  async_mode?: boolean;
+  step_delay_ms?: number;
 }
 
 export interface LaunchRunResponse {
@@ -176,6 +197,8 @@ export interface LedgerOrdersQueryResponse {
   total: number;
   limit: number;
   offset: number;
+  next_cursor?: string | null;
+  has_more?: boolean;
   summary: LedgerQuerySummary;
   symbol_specs: Record<string, SymbolSpecSummary>;
   items: Array<LedgerOrderRow>;
@@ -318,6 +341,7 @@ export interface RunChartDataResponse {
   symbol_spec: SymbolSpecSummary;
   bars: Array<ChartBarPoint>;
   trade_markers: Array<ChartTradeMarker>;
+  round_trips?: Array<ChartRoundTripPair>;
   equity_series: Array<ChartEquityPoint>;
 }
 

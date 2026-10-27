@@ -36,6 +36,7 @@ import {
   formatUtcTimestamp,
 } from "../../../lib/formatters";
 import { usePreferences } from "../../../lib/preferences-context";
+import type { ChartTradeMarker } from "../../../types/openapi.generated";
 
 interface ClosedTradeRow {
   exchange: string;
@@ -72,7 +73,7 @@ function BacktestReportInner() {
 
   const compareRunId = searchParams.get("compareRunId") || "";
   const [focusedTimeSec, setFocusedTimeSec] = useState<number | null>(null);
-  const [attribTab, setAttribTab] = useState<"trades" | "daily">("trades");
+  const [attribTab, setAttribTab] = useState<"fills" | "trades" | "daily">("fills");
 
   const reportQuery = useQuery({
     queryKey: ["backtest-report", runId, apiKey],
@@ -140,6 +141,130 @@ function BacktestReportInner() {
   const dailyRows = useMemo(
     () => ((report?.daily_attribution ?? []) as DailyAttributionRow[]),
     [report?.daily_attribution]
+  );
+
+  const markerRows = useMemo<ChartTradeMarker[]>(
+    () => chartQuery.data?.trade_markers ?? [],
+    [chartQuery.data?.trade_markers]
+  );
+
+  const markerColumns = useMemo<ColumnDef<ChartTradeMarker, unknown>[]>(
+    () => [
+      {
+        id: "action",
+        accessorFn: (r) => r.action_label || r.side,
+        header: "买卖动作 (点击定位K线)",
+        cell: ({ row }) => {
+          const isBuy = row.original.side.toUpperCase() === "BUY";
+          return (
+            <span
+              className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                isBuy
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "bg-rose-500/20 text-rose-300"
+              }`}
+            >
+              #{row.index + 1} {row.original.action_label || row.original.side}
+            </span>
+          );
+        },
+      },
+      {
+        id: "ts",
+        accessorFn: (r) => r.ts_ms || r.time_sec * 1000,
+        header: "成交时间 (UTC)",
+        meta: { mono: true },
+        cell: ({ row }) => (
+          <span className="text-xs text-slate-300">
+            {formatUtcTimestamp(
+              row.original.ts_ms || row.original.time_sec * 1000,
+              true
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "price",
+        accessorFn: (r) => Number(r.price),
+        header: "成交价",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => (
+          <span className="font-semibold text-white">
+            {formatPriceBySpec(row.original.price, tickSize)}
+          </span>
+        ),
+      },
+      {
+        id: "qty",
+        accessorFn: (r) => Number(r.qty),
+        header: "成交数量",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => <span>{formatQtyBySpec(row.original.qty, stepSize)}</span>,
+      },
+      {
+        id: "quote_qty",
+        accessorFn: (r) => Number(r.quote_qty || 0),
+        header: "成交名义额",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => (
+          <span>{formatCurrency(row.original.quote_qty || "0")}</span>
+        ),
+      },
+      {
+        id: "slippage",
+        accessorFn: (r) => Number(r.slippage_bps || 0),
+        header: "滑点 (bps)",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => <span>{row.original.slippage_bps || "0"}</span>,
+      },
+      {
+        id: "fee",
+        accessorFn: (r) => Number(r.fee || 0),
+        header: "手续费",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => (
+          <span className="text-amber-300">{formatCurrency(row.original.fee)}</span>
+        ),
+      },
+      {
+        id: "realized_pnl",
+        accessorFn: (r) => Number(r.realized_pnl || 0),
+        header: "已实现盈亏",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => (
+          <NumericDisplay
+            value={row.original.realized_pnl}
+            mode="currency"
+            coloredBySign
+            showPlusSign
+            className="font-bold"
+          />
+        ),
+      },
+      {
+        id: "pos_after",
+        accessorFn: (r) => Number(r.position_after || 0),
+        header: "成交后净仓",
+        meta: { align: "right", mono: true },
+        cell: ({ row }) => (
+          <span className="text-sky-300">
+            {formatQtyBySpec(row.original.position_after || "0", stepSize)}
+          </span>
+        ),
+      },
+      {
+        id: "reason",
+        accessorKey: "signal_reason",
+        header: "策略信号原因",
+        meta: { mono: true },
+        cell: ({ row }) => (
+          <span className="text-[11px] text-slate-400">
+            {row.original.signal_reason || row.original.liquidity}
+          </span>
+        ),
+      },
+    ],
+    [stepSize, tickSize]
   );
 
   const tradeColumns = useMemo<ColumnDef<ClosedTradeRow, unknown>[]>(
@@ -612,14 +737,15 @@ function BacktestReportInner() {
       <section id="chart-section">
         {chartQuery.data ? (
           <FinancialChartContainer
-            title="K 线买卖复盘 · 净值基准对比 · 水下回撤面积图"
+            title="专业 K 线复盘工作站 · 全量买卖执行点 · 净值与水下回撤"
             symbol={chartQuery.data.symbol}
             symbolSpec={chartQuery.data.symbol_spec}
             bars={chartQuery.data.bars}
             tradeMarkers={chartQuery.data.trade_markers}
+            roundTrips={chartQuery.data.round_trips}
             equitySeries={chartQuery.data.equity_series}
             focusedTimeSec={focusedTimeSec}
-            heightPx={340}
+            heightPx={420}
           />
         ) : null}
       </section>
@@ -728,10 +854,21 @@ function BacktestReportInner() {
         </div>
       </section>
 
-      {/* Per-Trade & Daily Attribution Tables (Click trade row -> Focuses K-line!) */}
+      {/* Per-Fill Buy/Sell Points, Round-Trip Trades & Daily Attribution Tables */}
       <section id="attribution-section" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="inline-flex rounded-md border border-border bg-slate-950 p-1">
+          <div className="inline-flex flex-wrap rounded-md border border-border bg-slate-950 p-1">
+            <button
+              type="button"
+              onClick={() => setAttribTab("fills")}
+              className={`rounded px-3 py-1 text-xs font-medium ${
+                attribTab === "fills"
+                  ? "bg-blue-600 text-white"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              全部买卖点执行明细 ({markerRows.length}) · 点击任意行精准定位 K 线箭头
+            </button>
             <button
               type="button"
               onClick={() => setAttribTab("trades")}
@@ -741,7 +878,7 @@ function BacktestReportInner() {
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              逐笔闭合交易归因 ({tradeRows.length}) · 点击任意行联动定位上方 K 线
+              逐笔闭合交易归因 ({tradeRows.length})
             </button>
             <button
               type="button"
@@ -757,7 +894,25 @@ function BacktestReportInner() {
           </div>
         </div>
 
-        {attribTab === "trades" ? (
+        {attribTab === "fills" ? (
+          markerRows.length === 0 ? (
+            <EmptyState
+              title="本次回测未产生买卖成交点"
+              description="当前策略参数在回测区间内未触发开平仓信号。"
+            />
+          ) : (
+            <QuantDataTable
+              tableId={`rep_fills_${runId.slice(0, 10)}`}
+              data={markerRows}
+              columns={markerColumns}
+              getRowId={(r) => r.fill_id}
+              onRowClick={(fill) => {
+                setFocusedTimeSec(fill.time_sec);
+                scrollToSection("chart-section");
+              }}
+            />
+          )
+        ) : attribTab === "trades" ? (
           tradeRows.length === 0 ? (
             <EmptyState
               title="本次回测无完整闭合交易对 (Round-Trip)"

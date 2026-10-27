@@ -227,3 +227,179 @@ def test_ui_control_plane_endpoints_end_to_end(tmp_path: Path) -> None:
     assert missing_fill_item["order_id"] == "cid_drill_entry"
     assert missing_fill_item["fill_id"] == "exfill_tr_drill_9001"
     assert missing_fill_item["ts_ms"] > 0
+
+
+def test_ui_param_sdk_metadata_and_enriched_kline_buy_sell_markers(tmp_path: Path) -> None:
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'kline_meta.db'}")
+    client = TestClient(app)
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+
+    gen = client.post(
+        "/api/v1/strategies/generate-nl",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_kline_markers",
+            "name": "KLine Multi-Wave SMA",
+            "prompt": "当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓",
+        },
+    )
+    assert gen.status_code == 200
+    ver = gen.json()
+    props = ver["param_schema"]["properties"]
+
+    # Verify explicit ui_param SDK metadata is emitted onto Pydantic JSON Schema
+    assert props["fast_window"]["ui_group"] == "signal"
+    assert props["fast_window"]["unit"] == "Bars"
+    assert props["fast_window"]["danger_level"] == "safe"
+    assert props["order_qty"]["ui_group"] == "risk_sizing"
+    assert props["order_qty"]["danger_level"] == "high"
+    assert "敞口" in props["order_qty"]["danger_hint"]
+
+    bt = client.post(
+        "/api/v1/runs/launch",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_kline_markers",
+            "version_id": ver["version_id"],
+            "env": "backtest",
+            "symbol": "BTC/USDT:USDT",
+        },
+    )
+    assert bt.status_code == 200
+    run_id = bt.json()["run_id"]
+
+    chart = client.get(f"/api/v1/runs/backtest/{run_id}/chart-data", headers=admin_hdr)
+    assert chart.status_code == 200
+    c_data = chart.json()
+
+    # Verify 180 realistic OHLCV candlesticks with non-flat bodies and wicks
+    assert len(c_data["bars"]) == 180
+    assert all(b["open"] != b["close"] for b in c_data["bars"])
+    assert all(b["high"] > max(b["open"], b["close"]) for b in c_data["bars"])
+    assert all(b["low"] < min(b["open"], b["close"]) for b in c_data["bars"])
+
+    # Verify multiple BUY & SELL execution markers with action_label, signal_reason & round_trips
+    markers = c_data["trade_markers"]
+    assert len(markers) >= 4
+    sides = {m["side"] for m in markers}
+    assert "BUY" in sides and "SELL" in sides
+    assert any("开多" in m["action_label"] for m in markers)
+    assert any("平多" in m["action_label"] for m in markers)
+    assert all(m["ts_ms"] > 0 for m in markers)
+    assert all(m["signal_reason"] != "" for m in markers)
+    assert len(c_data["round_trips"]) >= 2
+
+
+def test_async_streaming_progress_and_cancellation_token(tmp_path: Path) -> None:
+    import time
+
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'async_cancel.db'}")
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+
+    with TestClient(app) as client:
+        gen = client.post(
+            "/api/v1/strategies/generate-nl",
+            headers=admin_hdr,
+            json={
+                "strategy_id": "strat_cancel_test",
+                "name": "Async Cancel Test",
+                "prompt": "当 BTC/USDT:USDT 5周期均线上穿 15周期均线时买入 0.05 BTC，下穿时平仓",
+            },
+        )
+        assert gen.status_code == 200
+        ver_id = gen.json()["version_id"]
+
+        # Launch async backtest with 15ms per-bar delay (180 * 15ms = ~2.7s) and cancel mid-flight
+        launch_res = client.post(
+            "/api/v1/runs/launch",
+            headers=admin_hdr,
+            json={
+                "strategy_id": "strat_cancel_test",
+                "version_id": ver_id,
+                "env": "backtest",
+                "symbol": "BTC/USDT:USDT",
+                "async_mode": True,
+                "step_delay_ms": 15,
+            },
+        )
+        assert launch_res.status_code == 200
+        assert launch_res.json()["status"] == "RUNNING"
+        run_id = launch_res.json()["run_id"]
+
+        # Poll until at least 1 progress stride has advanced mid-loop
+        mid_status = None
+        for _ in range(40):
+            time.sleep(0.04)
+            st = client.get(f"/api/v1/runs/backtest/{run_id}/status", headers=admin_hdr).json()
+            if st["processed_bars"] > 0:
+                mid_status = st
+                break
+        assert mid_status is not None
+        assert 0 < mid_status["processed_bars"] < mid_status["total_bars"]
+
+        # Trigger mid-loop CancellationToken
+        cancel_res = client.post(f"/api/v1/runs/backtest/{run_id}/cancel", headers=admin_hdr)
+        assert cancel_res.status_code == 200
+        c_json = cancel_res.json()
+        assert c_json["status"] in {"STOPPED", "CANCELED"}
+        assert c_json["processed_bars"] < c_json["total_bars"]
+
+
+def test_ledger_keyset_cursor_pagination_no_duplicates(tmp_path: Path) -> None:
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'cursor_ledger.db'}")
+    client = TestClient(app)
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+
+    gen = client.post(
+        "/api/v1/strategies/generate-nl",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_cursor_test",
+            "name": "Cursor Pagination Strategy",
+            "prompt": "当 BTC/USDT:USDT 4周期均线上穿 11周期均线时买入 0.05 BTC，下穿时平仓",
+        },
+    )
+    assert gen.status_code == 200
+    ver_id = gen.json()["version_id"]
+
+    bt = client.post(
+        "/api/v1/runs/launch",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_cursor_test",
+            "version_id": ver_id,
+            "env": "backtest",
+            "symbol": "BTC/USDT:USDT",
+        },
+    )
+    assert bt.status_code == 200
+    run_id = bt.json()["run_id"]
+
+    seen_cids: list[str] = []
+    cursor: str | None = None
+    expected_total: int | None = None
+    pages = 0
+
+    while True:
+        url = f"/api/v1/ledger/orders/query?env=backtest&run_id={run_id}&limit=2"
+        if cursor:
+            url += f"&cursor={cursor}"
+        resp = client.get(url, headers=admin_hdr)
+        assert resp.status_code == 200
+        body = resp.json()
+        if expected_total is None:
+            expected_total = body["total"]
+            assert expected_total >= 4
+        for row in body["items"]:
+            seen_cids.append(row["client_order_id"])
+        pages += 1
+        if not body["has_more"]:
+            assert body["next_cursor"] is None
+            break
+        assert body["next_cursor"] is not None
+        cursor = body["next_cursor"]
+        assert pages <= 50
+
+    assert len(seen_cids) == expected_total
+    assert len(set(seen_cids)) == expected_total
+

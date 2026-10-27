@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import random
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from quant_platform.core.models import (
 )
 from quant_platform.data import HistoricalDataFeed, SimulatedClock
 from quant_platform.db.ledger import UnifiedLedgerRepository
+from quant_platform.db.schema import SignalTraceRecord
 from quant_platform.specs import SymbolSpecService, normalize_and_validate_order
 
 
@@ -143,7 +144,12 @@ class BacktestEngine:
         self.hourly_borrow_rates = hourly_borrow_rates
         self.maintenance_windows = maintenance_windows
 
-    def run(self) -> BacktestRunResult:
+    def run(
+        self,
+        *,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> BacktestRunResult:
         ledger = UnifiedLedgerRepository(self.db_session)
         timeline = self.data_feed.all_timeline_timestamps()
         start_ts = timeline[0] if timeline else self.clock.now_ms()
@@ -256,6 +262,22 @@ class BacktestEngine:
                     auto_round=True,
                     now_ms=self.clock.now_ms(),
                 )
+                trace = SignalTraceRecord(
+                    signal_id=intent.signal_id,
+                    env=RunEnv.BACKTEST.value,
+                    run_id=run_id,
+                    strategy_id=self.config.strategy_id,
+                    exchange=intent.exchange,
+                    symbol=intent.symbol,
+                    intent_type="Signal" if isinstance(intent, Signal) else "TargetPosition",
+                    payload_json=intent.model_dump(mode="json"),
+                    client_order_id=norm_req.client_order_id,
+                    snapshot_ref=f"ts:{self.clock.now_ms()}",
+                    signal_ts_ms=intent.ts_ms,
+                    order_ts_ms=self.clock.now_ms(),
+                )
+                self.db_session.add(trace)
+                self.db_session.flush()
                 broker.submit_order(norm_req)
 
         broker.register_order_callback(lambda o: _dispatch_intents(strategy.on_order_update(o)))
@@ -292,7 +314,17 @@ class BacktestEngine:
                     if b.is_closed:
                         bar_by_ts.setdefault(b.close_time_ms, []).append(b)
 
-            for ts_ms in timeline:
+            total_steps = len(timeline)
+            if progress_callback is not None:
+                progress_callback(0, total_steps, "EVENT_REPLAY")
+
+            canceled = False
+            report_stride = max(1, total_steps // 20)
+            for step_idx, ts_ms in enumerate(timeline, start=1):
+                if cancel_check is not None and cancel_check():
+                    canceled = True
+                    break
+
                 self.clock.advance_to(ts_ms)
                 broker.accrue_borrow_interest(ts_ms)
 
@@ -321,14 +353,27 @@ class BacktestEngine:
                 for bal in broker.query_balance(default_ex):
                     ledger.record_balance_snapshot(bal)
 
+                if progress_callback is not None and (
+                    step_idx % report_stride == 0 or step_idx == total_steps
+                ):
+                    progress_callback(step_idx, total_steps, "EVENT_REPLAY")
+
             _dispatch_intents(strategy.on_stop())
             final_pt = broker.snapshot_equity(default_ex)
             if not equity_points or equity_points[-1].ts_ms != final_pt.ts_ms or equity_points[-1].equity != final_pt.equity:
                 equity_points.append(final_pt)
 
+            final_status = RunStatus.STOPPED if canceled else RunStatus.COMPLETED
+            if progress_callback is not None:
+                progress_callback(
+                    len(equity_points),
+                    total_steps,
+                    "STOPPED" if canceled else "REPORT_PERSIST",
+                )
+
             run_rec = run_rec.model_copy(
                 update={
-                    "status": RunStatus.COMPLETED,
+                    "status": final_status,
                     "ended_at_ms": self.clock.now_ms(),
                 }
             )

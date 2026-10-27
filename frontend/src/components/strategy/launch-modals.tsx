@@ -51,6 +51,7 @@ export function QuickBacktestModal({
 
   const [symbol, setSymbol] = useState("BTC/USDT:USDT");
   const [initialUsdt, setInitialUsdt] = useState("10000");
+  const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [completedRun, setCompletedRun] = useState<LaunchRunResponse | null>(null);
 
   const specsQuery = useQuery({
@@ -60,8 +61,42 @@ export function QuickBacktestModal({
   });
 
   useEffect(() => {
-    if (open) setCompletedRun(null);
+    if (open) {
+      setCompletedRun(null);
+      setStreamingRunId(null);
+    }
   }, [open, strategyId, versionId]);
+
+  const statusQuery = useQuery({
+    queryKey: ["run-status", "backtest", streamingRunId],
+    queryFn: () => quantApi.getRunStatus(apiKey, "backtest", streamingRunId!),
+    enabled: Boolean(streamingRunId),
+    refetchInterval: (q) => (q.state.data?.status === "RUNNING" ? 250 : false),
+  });
+
+  useEffect(() => {
+    const st = statusQuery.data;
+    if (!st || !streamingRunId) return;
+    if (st.status === "COMPLETED") {
+      const doneResp: LaunchRunResponse = {
+        run_id: st.run_id,
+        env: st.env,
+        status: st.status,
+        strategy_id: st.strategy_id,
+        version_id: st.version_id,
+      };
+      setCompletedRun(doneResp);
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["strategies"] });
+      void queryClient.invalidateQueries({ queryKey: ["strategy-detail", strategyId] });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["system-overview"] });
+      onCompleted?.(doneResp);
+    } else if (st.status === "STOPPED" || st.status === "CANCELED") {
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    }
+  }, [onCompleted, queryClient, statusQuery.data, strategyId, streamingRunId]);
 
   const launchMutation = useMutation({
     mutationFn: () =>
@@ -72,19 +107,32 @@ export function QuickBacktestModal({
         exchange: "binance",
         symbol,
         initial_usdt: initialUsdt,
+        async_mode: true,
+        step_delay_ms: 6,
       }),
     onSuccess: (data) => {
-      setCompletedRun(data);
-      void queryClient.invalidateQueries({ queryKey: ["strategies"] });
-      void queryClient.invalidateQueries({ queryKey: ["strategy-detail", strategyId] });
+      if (data.status === "RUNNING") {
+        setStreamingRunId(data.run_id);
+      } else {
+        setCompletedRun(data);
+        onCompleted?.(data);
+      }
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
-      void queryClient.invalidateQueries({ queryKey: ["system-overview"] });
-      onCompleted?.(data);
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => quantApi.cancelRun(apiKey, "backtest", streamingRunId!),
+    onSuccess: () => {
+      setStreamingRunId(null);
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
     },
   });
 
   const apiErr =
     launchMutation.error instanceof QuantApiError ? launchMutation.error : null;
+  const liveStatus = statusQuery.data;
+  const isRunningStream = launchMutation.isPending || Boolean(streamingRunId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -99,11 +147,21 @@ export function QuickBacktestModal({
           </DialogDescription>
         </DialogHeader>
 
-        {launchMutation.isPending ? (
+        {isRunningStream ? (
           <RunLoadingState
             title={`正在执行回测 (${symbol})`}
-            currentStageLabel="Walk-the-Book 深度撮合与绩效归因计算"
-            progressPct={70}
+            currentStageLabel={
+              liveStatus
+                ? `${liveStatus.stage} · 实时流式撮合中`
+                : "正在初始化确定性沙箱与历史 K 线源..."
+            }
+            progressPct={liveStatus?.progress_pct ?? 5}
+            processedBars={liveStatus?.processed_bars}
+            totalBars={liveStatus?.total_bars}
+            elapsedMs={liveStatus?.elapsed_ms}
+            estimatedRemainingMs={liveStatus?.estimated_remaining_ms}
+            onCancel={streamingRunId ? () => cancelMutation.mutate() : undefined}
+            canceling={cancelMutation.isPending}
           />
         ) : completedRun ? (
           <div className="space-y-3 rounded-lg border border-emerald-500/40 bg-emerald-950/20 p-4 text-xs">

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { Suspense, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Database, Download, RotateCcw } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -187,7 +187,7 @@ function UnifiedLedgerInner() {
   const startTsMs = startDateStr ? Date.parse(startDateStr) : undefined;
   const endTsMs = endDateStr ? Date.parse(endDateStr) + 86_399_999 : undefined;
 
-  const ordersQuery = useQuery({
+  const ordersQuery = useInfiniteQuery({
     queryKey: [
       "ledger-orders-multi",
       apiKey,
@@ -200,7 +200,8 @@ function UnifiedLedgerInner() {
       startTsMs,
       endTsMs,
     ],
-    queryFn: () =>
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
       quantApi.queryOrdersMultiFilter(apiKey, {
         env: envFilter || undefined,
         strategy_id: strategyFilter || undefined,
@@ -210,8 +211,11 @@ function UnifiedLedgerInner() {
         q: queryText || undefined,
         start_ts_ms: Number.isFinite(startTsMs) ? startTsMs : undefined,
         end_ts_ms: Number.isFinite(endTsMs) ? endTsMs : undefined,
-        limit: 500,
+        limit: 80,
+        cursor: pageParam,
       }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more && lastPage.next_cursor ? lastPage.next_cursor : undefined,
   });
 
   const auxLedgerQuery = useQuery({
@@ -248,7 +252,18 @@ function UnifiedLedgerInner() {
     router.replace(pathname, { scroll: false });
   };
 
-  const specsMap = ordersQuery.data?.symbol_specs ?? {};
+  const mergedOrders = useMemo<LedgerOrderRow[]>(
+    () => ordersQuery.data?.pages.flatMap((p) => p.items) ?? [],
+    [ordersQuery.data]
+  );
+
+  const specsMap = useMemo<Record<string, SymbolSpecSummary>>(() => {
+    const out: Record<string, SymbolSpecSummary> = {};
+    for (const p of ordersQuery.data?.pages ?? []) {
+      Object.assign(out, p.symbol_specs);
+    }
+    return out;
+  }, [ordersQuery.data]);
 
   const orderColumns = useMemo<ColumnDef<LedgerOrderRow, unknown>[]>(
     () => [
@@ -388,7 +403,7 @@ function UnifiedLedgerInner() {
   );
 
   const handleExportOrdersCsv = () => {
-    const items = ordersQuery.data?.items ?? [];
+    const items = mergedOrders;
     const hdr =
       "env,run_id,strategy_id,client_order_id,exchange_order_id,symbol,side,order_type,quantity,filled_qty,avg_fill_price,fee_total,status,realized_pnl_usdt,created_ts_ms\n";
     const body = items
@@ -406,7 +421,9 @@ function UnifiedLedgerInner() {
     URL.revokeObjectURL(url);
   };
 
-  const sum = ordersQuery.data?.summary;
+  const firstPage = ordersQuery.data?.pages[0];
+  const sum = firstPage?.summary;
+  const totalMatchedCount = firstPage?.total ?? mergedOrders.length;
   const apiErr =
     ordersQuery.error instanceof QuantApiError ? ordersQuery.error : null;
 
@@ -675,7 +692,7 @@ function UnifiedLedgerInner() {
           remediation="请检查时间范围格式或重置筛选条件后重试。"
           actions={[{ label: "重置筛选并重试", onClick: handleResetFilters }]}
         />
-      ) : (ordersQuery.data?.items.length ?? 0) === 0 ? (
+      ) : mergedOrders.length === 0 ? (
         <EmptyState
           title="当前组合筛选条件下暂无委托记录"
           description="您可以清空筛选条件，或前往策略工作台发起一次回测/影子运行以产生统一账本流水。"
@@ -692,9 +709,18 @@ function UnifiedLedgerInner() {
       ) : (
         <QuantDataTable
           tableId="ledger_orders"
-          data={ordersQuery.data?.items ?? []}
+          data={mergedOrders}
           columns={orderColumns}
           getRowId={(r) => `${r.env}_${r.run_id}_${r.client_order_id}`}
+          disableClientPagination
+          totalCountOverride={totalMatchedCount}
+          hasNextPage={Boolean(ordersQuery.hasNextPage)}
+          isFetchingNextPage={ordersQuery.isFetchingNextPage}
+          onLoadMore={() => {
+            if (ordersQuery.hasNextPage && !ordersQuery.isFetchingNextPage) {
+              void ordersQuery.fetchNextPage();
+            }
+          }}
           renderExpandedRow={(order) => (
             <OrderFillsSubpanel order={order} spec={specsMap[order.symbol]} />
           )}

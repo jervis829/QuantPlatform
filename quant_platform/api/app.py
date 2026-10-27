@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
+import threading
 import time
 from typing import Any
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from quant_platform import ENGINE_VERSION
 from quant_platform.api.auth import ActorPrincipal, Role, require_min_role
 from quant_platform.api.schemas import (
     ChartBarPoint,
     ChartEquityPoint,
+    ChartRoundTripPair,
     ChartTradeMarker,
     ExchangeConnectionItem,
     GlobalSearchHit,
@@ -86,9 +89,10 @@ from quant_platform.core.enums import (
     PositionSide,
     ReconciliationTier,
     RunEnv,
+    RunStatus,
 )
-from quant_platform.core.hashing import canonical_json, sha256_hex
-from quant_platform.core.models import Bar, Position, StrategyConfig, SymbolSpec
+from quant_platform.core.hashing import canonical_json, compute_run_id, sha256_hex
+from quant_platform.core.models import Bar, Position, RunRecord, StrategyConfig, SymbolSpec
 from quant_platform.data.clock import SimulatedClock
 from quant_platform.data.feed import StreamingDataFeed
 from quant_platform.db.ledger import UnifiedLedgerRepository
@@ -181,22 +185,66 @@ def _spec_to_summary(spec: SymbolSpec) -> SymbolSpecSummary:
 
 
 def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:USDT") -> list[Bar]:
+    """Deterministic 180-bar (3h) multi-swing 1m OHLCV series with realistic bodies, wicks & volume."""
     base_ts = 1_700_000_000_000
-    base_anchor = Decimal("3000") if symbol.upper().startswith("ETH") else Decimal("50000")
-    step_dn = Decimal("8") if symbol.upper().startswith("ETH") else Decimal("120")
-    step_up = Decimal("15") if symbol.upper().startswith("ETH") else Decimal("220")
-    step_dn2 = Decimal("16") if symbol.upper().startswith("ETH") else Decimal("240")
-    spread = Decimal("4") if symbol.upper().startswith("ETH") else Decimal("40")
+    is_eth = symbol.upper().startswith("ETH")
+    anchor = Decimal("3000.0") if is_eth else Decimal("50000.0")
+    unit = Decimal("1.0") if is_eth else Decimal("15.0")
+    tick = Decimal("0.1")
 
-    p1 = [base_anchor - step_dn * Decimal(i) for i in range(10)]
-    p2_start = p1[-1] - step_dn
-    p2 = [p2_start + step_up * Decimal(i) for i in range(15)]
-    p3_start = p2[-1] + step_up
-    p3 = [p3_start - step_dn2 * Decimal(i) for i in range(10)]
-    prices = p1 + p2 + p3
+    # 6 multi-regime market waves (total 180 bars):
+    # 1) Capitulation dip (24 bars) -> 2) Strong impulse rally (36 bars)
+    # 3) Profit-taking pullback (30 bars) -> 4) Markup breakout (42 bars)
+    # 5) Mean-reversion consolidation (26 bars) -> 6) Final trend push (22 bars)
+    regimes: list[tuple[int, Decimal, int]] = [
+        (24, Decimal("-4.2"), 68),
+        (36, Decimal("5.8"), 118),
+        (30, Decimal("-4.6"), 82),
+        (42, Decimal("5.4"), 135),
+        (26, Decimal("-4.4"), 76),
+        (22, Decimal("5.1"), 112),
+    ]
+    micro_osc = (
+        Decimal("-1.8"),
+        Decimal("2.4"),
+        Decimal("-1.3"),
+        Decimal("2.9"),
+        Decimal("-2.1"),
+        Decimal("1.5"),
+    )
+    wick_top_osc = (Decimal("1.6"), Decimal("2.8"), Decimal("1.2"), Decimal("3.4"), Decimal("2.1"))
+    wick_bot_osc = (Decimal("2.2"), Decimal("1.4"), Decimal("3.1"), Decimal("1.7"), Decimal("2.6"))
+
+    closes: list[Decimal] = []
+    vols: list[Decimal] = []
+    cur = anchor
+    bar_idx = 0
+    for length, drift, base_vol in regimes:
+        for step in range(length):
+            osc = micro_osc[bar_idx % len(micro_osc)]
+            # Smooth easing near regime turns + realistic intra-trend counter-candles
+            counter = Decimal("-1.6") * drift if (step % 5 == 2) else Decimal("0")
+            delta = ((drift + osc + counter) * unit).quantize(tick)
+            if delta == ZERO:
+                delta = unit
+            cur = (cur + delta).quantize(tick)
+            closes.append(cur)
+            vol_wave = Decimal(base_vol + ((bar_idx * 13) % 45))
+            vols.append(vol_wave)
+            bar_idx += 1
 
     out: list[Bar] = []
-    for idx, px in enumerate(prices):
+    prev_close = anchor
+    for idx, close_px in enumerate(closes):
+        open_px = prev_close
+        if open_px == close_px:
+            close_px = (close_px + unit).quantize(tick)
+        hi_wick = (wick_top_osc[idx % len(wick_top_osc)] * unit).quantize(tick)
+        lo_wick = (wick_bot_osc[idx % len(wick_bot_osc)] * unit).quantize(tick)
+        high_px = (max(open_px, close_px) + hi_wick).quantize(tick)
+        low_px = (min(open_px, close_px) - lo_wick).quantize(tick)
+        vol = vols[idx]
+        mid_px = ((open_px + close_px) / Decimal("2")).quantize(tick)
         o_ts = base_ts + idx * 60_000
         c_ts = o_ts + 59_999
         out.append(
@@ -206,18 +254,19 @@ def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:US
                 interval="1m",
                 open_time_ms=o_ts,
                 close_time_ms=c_ts,
-                open=px,
-                high=px + spread,
-                low=px - spread,
-                close=px,
-                volume=Decimal("50"),
-                quote_volume=px * Decimal("50"),
-                trade_count=30,
+                open=open_px,
+                high=high_px,
+                low=low_px,
+                close=close_px,
+                volume=vol,
+                quote_volume=(mid_px * vol).quantize(tick),
+                trade_count=int(vol * Decimal("2")),
                 is_closed=True,
                 exchange_ts_ms=c_ts,
                 local_recv_ts_ms=c_ts,
             )
         )
+        prev_close = close_px
     return out
 
 
@@ -339,6 +388,9 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
     app.state.kill_switch_active = False
     app.state.active_live_broker = None
     app.state.clock_skew_ms = 12
+    app.state.run_progress = {}
+    app.state.cancel_tokens = {}
+    app.state.active_run_tasks = {}
     app.state.ws_channels = {
         ("binance", "spot_market_ws"): {"healthy": True, "last_heartbeat_ms": wall_clock.now_ms()},
         ("binance", "usdtm_perp_ws"): {"healthy": True, "last_heartbeat_ms": wall_clock.now_ms()},
@@ -1145,12 +1197,229 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             ledger = UnifiedLedgerRepository(session)
 
             if target_env == RunEnv.BACKTEST:
+                from quant_platform.backtest.matching import SlippageModelConfig
                 from quant_platform.data import HistoricalDataFeed
+                from quant_platform.specs import SymbolSpecService
 
+                total_bars = len(bars)
                 bt_clock = SimulatedClock(bars[0].open_time_ms)
                 bt_feed = HistoricalDataFeed(clock=bt_clock)
                 bt_feed.register_symbol_spec(spec)
                 bt_feed.load_bars(req.exchange, req.symbol, "1m", bars)
+
+                if req.async_mode:
+                    slip_cfg = SlippageModelConfig()
+                    spec_ver_hash = SymbolSpecService.composite_version_hash([spec])
+                    ds_ver = bt_feed.dataset_version()
+                    cfg_snapshot = {
+                        **cfg.model_dump(mode="json"),
+                        "slippage_model": slip_cfg.model_dump(mode="json"),
+                    }
+                    det_run_id = compute_run_id(
+                        strategy_code=ver.code,
+                        config_snapshot=cfg_snapshot,
+                        dataset_version=ds_ver,
+                        symbol_spec_version=spec_ver_hash,
+                        engine_version=ENGINE_VERSION,
+                    )
+                    init_rec = RunRecord(
+                        run_id=det_run_id,
+                        env=RunEnv.BACKTEST,
+                        strategy_id=req.strategy_id,
+                        strategy_version_id=ver.version_id,
+                        strategy_code_hash=ver.code_hash,
+                        status=RunStatus.RUNNING,
+                        config_snapshot=cfg_snapshot,
+                        dataset_version=ds_ver,
+                        symbol_spec_version=spec_ver_hash,
+                        engine_version=ENGINE_VERSION,
+                        started_at_ms=bars[0].open_time_ms,
+                    )
+                    ledger.upsert_run(init_rec)
+                    append_audit_log(
+                        session,
+                        actor=principal.actor_id,
+                        action="RUN_LAUNCHED",
+                        resource_type="run",
+                        resource_id=det_run_id,
+                        payload={
+                            "env": target_env.value,
+                            "version_id": ver.version_id,
+                            "symbol": req.symbol,
+                            "async_mode": True,
+                        },
+                        ts_ms=wall_clock.now_ms(),
+                    )
+                    session.commit()
+
+                    cancel_ev = threading.Event()
+                    started_wall = wall_clock.now_ms()
+                    app.state.cancel_tokens[det_run_id] = cancel_ev
+                    app.state.run_progress[det_run_id] = {
+                        "run_id": det_run_id,
+                        "env": target_env.value,
+                        "strategy_id": req.strategy_id,
+                        "version_id": ver.version_id,
+                        "status": "RUNNING",
+                        "stage": "INIT",
+                        "processed_bars": 0,
+                        "total_bars": total_bars,
+                        "progress_pct": 0.0,
+                        "started_wall_ms": started_wall,
+                        "elapsed_ms": 0,
+                        "estimated_remaining_ms": None,
+                        "error_code": None,
+                        "error_message": None,
+                    }
+
+                    loop = asyncio.get_running_loop()
+                    ver_code = ver.code
+                    ver_id = ver.version_id
+                    strat_id = req.strategy_id
+                    ex_name = req.exchange
+                    sym_name = req.symbol
+                    delay_sec = req.step_delay_ms / 1000.0
+
+                    async def _bg_backtest_worker() -> None:
+                        def _sync_exec() -> tuple[str, str | None]:
+                            with sf() as bg_session:
+                                w_clock = SimulatedClock(bars[0].open_time_ms)
+                                w_feed = HistoricalDataFeed(clock=w_clock)
+                                w_feed.register_symbol_spec(spec)
+                                w_feed.load_bars(ex_name, sym_name, "1m", bars)
+                                w_engine = BacktestEngine(
+                                    db_session=bg_session,
+                                    clock=w_clock,
+                                    data_feed=w_feed,
+                                    strategy_cls=cls,
+                                    strategy_code=ver_code,
+                                    config=cfg,
+                                )
+
+                                def _on_prog(done: int, total: int, stage: str) -> None:
+                                    now_w = wall_clock.now_ms()
+                                    elapsed = max(1, now_w - started_wall)
+                                    pct = round((done / max(1, total)) * 100.0, 2)
+                                    eta = (
+                                        int(elapsed * (total - done) / done)
+                                        if done > 0 and done < total
+                                        else (0 if done >= total else None)
+                                    )
+                                    snap = {
+                                        "run_id": det_run_id,
+                                        "env": "backtest",
+                                        "strategy_id": strat_id,
+                                        "version_id": ver_id,
+                                        "status": "STOPPED" if cancel_ev.is_set() else "RUNNING",
+                                        "stage": stage,
+                                        "processed_bars": done,
+                                        "total_bars": total,
+                                        "progress_pct": pct,
+                                        "started_wall_ms": started_wall,
+                                        "elapsed_ms": elapsed,
+                                        "estimated_remaining_ms": eta,
+                                        "error_code": None,
+                                        "error_message": None,
+                                    }
+                                    app.state.run_progress[det_run_id] = snap
+                                    loop.call_soon_threadsafe(
+                                        lambda s=dict(snap): asyncio.create_task(
+                                            ws_hub.publish({"type": "run_progress", **s, "ts_ms": now_w})
+                                        )
+                                    )
+
+                                def _check_cancel() -> bool:
+                                    if delay_sec > 0 and not cancel_ev.is_set():
+                                        time.sleep(delay_sec)
+                                    return cancel_ev.is_set()
+
+                                res = w_engine.run(progress_callback=_on_prog, cancel_check=_check_cancel)
+                                if res.run_record.status == RunStatus.COMPLETED:
+                                    build_and_persist_backtest_report(
+                                        db_session=bg_session, result=res, benchmark_bars=bars
+                                    )
+                                bg_session.commit()
+                                return res.run_record.status.value, res.run_record.error_message
+
+                        try:
+                            final_st, err_msg = await asyncio.to_thread(_sync_exec)
+                            now_done = wall_clock.now_ms()
+                            prev_prog = app.state.run_progress.get(det_run_id, {})
+                            done_cnt = total_bars if final_st == "COMPLETED" else prev_prog.get("processed_bars", 0)
+                            pct_val = 100.0 if final_st == "COMPLETED" else prev_prog.get("progress_pct", 0.0)
+                            final_snap = {
+                                "run_id": det_run_id,
+                                "env": "backtest",
+                                "strategy_id": strat_id,
+                                "version_id": ver_id,
+                                "status": final_st,
+                                "stage": final_st,
+                                "processed_bars": done_cnt,
+                                "total_bars": total_bars,
+                                "progress_pct": pct_val,
+                                "started_wall_ms": started_wall,
+                                "elapsed_ms": max(1, now_done - started_wall),
+                                "estimated_remaining_ms": 0,
+                                "error_code": None,
+                                "error_message": err_msg,
+                            }
+                            app.state.run_progress[det_run_id] = final_snap
+                            await ws_hub.publish({"type": "run_progress", **final_snap, "ts_ms": now_done})
+                            await ws_hub.publish(
+                                {
+                                    "type": "run_completed" if final_st == "COMPLETED" else "run_canceled",
+                                    "run_id": det_run_id,
+                                    "env": "backtest",
+                                    "strategy_id": strat_id,
+                                    "status": final_st,
+                                    "ts_ms": now_done,
+                                }
+                            )
+                        except Exception as exc:
+                            now_err = wall_clock.now_ms()
+                            app.state.run_progress[det_run_id] = {
+                                **app.state.run_progress.get(det_run_id, {}),
+                                "status": "FAILED",
+                                "stage": "FAILED",
+                                "error_code": "BACKTEST_EXEC_ERROR",
+                                "error_message": str(exc),
+                                "elapsed_ms": max(1, now_err - started_wall),
+                                "estimated_remaining_ms": 0,
+                            }
+                            await ws_hub.publish(
+                                {
+                                    "type": "run_failed",
+                                    "run_id": det_run_id,
+                                    "env": "backtest",
+                                    "strategy_id": strat_id,
+                                    "status": "FAILED",
+                                    "error": str(exc),
+                                    "ts_ms": now_err,
+                                }
+                            )
+                        finally:
+                            app.state.active_run_tasks.pop(det_run_id, None)
+                            app.state.cancel_tokens.pop(det_run_id, None)
+
+                    await ws_hub.publish(
+                        {
+                            "type": "run_progress",
+                            **app.state.run_progress[det_run_id],
+                            "ts_ms": started_wall,
+                        }
+                    )
+                    task = asyncio.create_task(_bg_backtest_worker())
+                    app.state.active_run_tasks[det_run_id] = task
+                    return LaunchRunResponse(
+                        run_id=det_run_id,
+                        env=target_env.value,
+                        status="RUNNING",
+                        strategy_id=req.strategy_id,
+                        version_id=ver.version_id,
+                    )
+
+                started_wall_sync = wall_clock.now_ms()
+                progress_frames: list[dict[str, Any]] = []
                 bt_engine = BacktestEngine(
                     db_session=session,
                     clock=bt_clock,
@@ -1159,9 +1428,55 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                     strategy_code=ver.code,
                     config=cfg,
                 )
-                bt_res = bt_engine.run()
+
+                def _sync_prog(done: int, total: int, stage: str) -> None:
+                    now_w = wall_clock.now_ms()
+                    elapsed = max(1, now_w - started_wall_sync)
+                    pct = round((done / max(1, total)) * 100.0, 2)
+                    eta = int(elapsed * (total - done) / done) if 0 < done < total else 0
+                    progress_frames.append(
+                        {
+                            "stage": stage,
+                            "processed_bars": done,
+                            "total_bars": total,
+                            "progress_pct": pct,
+                            "elapsed_ms": elapsed,
+                            "estimated_remaining_ms": eta,
+                            "ts_ms": now_w,
+                        }
+                    )
+
+                bt_res = bt_engine.run(progress_callback=_sync_prog)
                 build_and_persist_backtest_report(db_session=session, result=bt_res, benchmark_bars=bars)
                 run_rec = bt_res.run_record
+                app.state.run_progress[run_rec.run_id] = {
+                    "run_id": run_rec.run_id,
+                    "env": target_env.value,
+                    "strategy_id": req.strategy_id,
+                    "version_id": ver.version_id,
+                    "status": run_rec.status.value,
+                    "stage": "COMPLETED",
+                    "processed_bars": total_bars,
+                    "total_bars": total_bars,
+                    "progress_pct": 100.0,
+                    "started_wall_ms": started_wall_sync,
+                    "elapsed_ms": max(1, wall_clock.now_ms() - started_wall_sync),
+                    "estimated_remaining_ms": 0,
+                    "error_code": None,
+                    "error_message": run_rec.error_message,
+                }
+                for frame in progress_frames[-4:]:
+                    await ws_hub.publish(
+                        {
+                            "type": "run_progress",
+                            "run_id": run_rec.run_id,
+                            "env": target_env.value,
+                            "strategy_id": req.strategy_id,
+                            "version_id": ver.version_id,
+                            "status": "RUNNING" if frame["progress_pct"] < 100.0 else "COMPLETED",
+                            **frame,
+                        }
+                    )
             elif target_env == RunEnv.SHADOW:
                 sh_clock = SimulatedClock(bars[0].open_time_ms)
                 sh_feed = StreamingDataFeed(clock=sh_clock)
@@ -1276,28 +1591,67 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         run_id: str,
         _: ActorPrincipal = Depends(require_min_role(Role.VIEWER)),
     ) -> RunStatusResponse:
+        env_lc = env.lower()
+        live_prog = app.state.run_progress.get(run_id)
+        if live_prog and live_prog.get("env") == env_lc and live_prog.get("status") == "RUNNING":
+            now_w = wall_clock.now_ms()
+            elapsed_live = max(1, now_w - int(live_prog.get("started_wall_ms", now_w)))
+            done = int(live_prog.get("processed_bars", 0))
+            total = int(live_prog.get("total_bars", 180))
+            eta_live = int(elapsed_live * (total - done) / done) if 0 < done < total else None
+            return RunStatusResponse(
+                run_id=run_id,
+                env=env_lc,
+                strategy_id=str(live_prog["strategy_id"]),
+                version_id=str(live_prog["version_id"]),
+                status="RUNNING",
+                stage=str(live_prog.get("stage", "EVENT_REPLAY")),
+                processed_bars=done,
+                total_bars=total,
+                progress_pct=float(live_prog.get("progress_pct", 0.0)),
+                elapsed_ms=elapsed_live,
+                estimated_remaining_ms=eta_live,
+                error_code=live_prog.get("error_code"),
+                error_message=live_prog.get("error_message"),
+            )
+
         with sf() as session:
             row = session.execute(
-                select(RunOrmRecord).where(RunOrmRecord.env == env.lower(), RunOrmRecord.run_id == run_id)
+                select(RunOrmRecord).where(RunOrmRecord.env == env_lc, RunOrmRecord.run_id == run_id)
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail=f"Run {env}:{run_id} not found")
-            total_bars = 35
-            done_bars = total_bars if row.status == "COMPLETED" else 0
-            elapsed = max(0, (row.ended_at_ms or wall_clock.now_ms()) - row.started_at_ms)
+            total_bars = int(live_prog["total_bars"]) if live_prog and "total_bars" in live_prog else len(_canonical_sample_bars())
+            if row.status == "COMPLETED":
+                done_bars = total_bars
+                pct = 100.0
+                stage = "COMPLETED"
+            elif live_prog:
+                done_bars = int(live_prog.get("processed_bars", 0))
+                pct = float(live_prog.get("progress_pct", 0.0))
+                stage = str(live_prog.get("stage", row.status))
+            else:
+                done_bars = 0
+                pct = 0.0
+                stage = row.status
+            elapsed = (
+                int(live_prog["elapsed_ms"])
+                if live_prog and "elapsed_ms" in live_prog
+                else max(0, (row.ended_at_ms or wall_clock.now_ms()) - row.started_at_ms)
+            )
             return RunStatusResponse(
                 run_id=row.run_id,
                 env=row.env,
                 strategy_id=row.strategy_id,
                 version_id=row.strategy_version_id,
                 status=row.status,
-                stage="COMPLETED" if row.status == "COMPLETED" else row.status,
+                stage=stage,
                 processed_bars=done_bars,
                 total_bars=total_bars,
-                progress_pct=100.0 if row.status == "COMPLETED" else 0.0,
+                progress_pct=pct,
                 elapsed_ms=elapsed,
-                estimated_remaining_ms=0 if row.status == "COMPLETED" else None,
-                error_code=None,
+                estimated_remaining_ms=0 if row.status in {"COMPLETED", "STOPPED", "CANCELED", "FAILED"} else None,
+                error_code=live_prog.get("error_code") if live_prog else None,
                 error_message=row.error_message,
             )
 
@@ -1307,40 +1661,67 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         run_id: str,
         principal: ActorPrincipal = Depends(require_min_role(Role.RESEARCHER)),
     ) -> RunStatusResponse:
+        env_lc = env.lower()
+        cancel_ev = app.state.cancel_tokens.get(run_id)
+        if cancel_ev is not None:
+            cancel_ev.set()
+        active_task = app.state.active_run_tasks.get(run_id)
+        if active_task is not None and not active_task.done():
+            await asyncio.wait({active_task}, timeout=3.0)
+
         with sf() as session:
             row = session.execute(
-                select(RunOrmRecord).where(RunOrmRecord.env == env.lower(), RunOrmRecord.run_id == run_id)
+                select(RunOrmRecord).where(RunOrmRecord.env == env_lc, RunOrmRecord.run_id == run_id)
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail=f"Run {env}:{run_id} not found")
+            now_cancel = wall_clock.now_ms()
             if row.status not in {"COMPLETED", "FAILED", "CANCELED"}:
-                row.status = "CANCELED"
-                row.ended_at_ms = wall_clock.now_ms()
+                row.status = "STOPPED" if row.status == "STOPPED" else "CANCELED"
+                row.ended_at_ms = row.ended_at_ms or now_cancel
                 append_audit_log(
                     session,
                     actor=principal.actor_id,
                     action="RUN_CANCELED",
                     resource_type="run",
                     resource_id=run_id,
-                    payload={"env": env.lower()},
-                    ts_ms=wall_clock.now_ms(),
+                    payload={"env": env_lc, "final_status": row.status},
+                    ts_ms=now_cancel,
                 )
                 session.commit()
-            return RunStatusResponse(
+            live_prog = app.state.run_progress.get(run_id, {})
+            total_bars = int(live_prog.get("total_bars", len(_canonical_sample_bars())))
+            done_bars = total_bars if row.status == "COMPLETED" else int(live_prog.get("processed_bars", 0))
+            pct = 100.0 if row.status == "COMPLETED" else float(live_prog.get("progress_pct", 0.0))
+            resp_obj = RunStatusResponse(
                 run_id=row.run_id,
                 env=row.env,
                 strategy_id=row.strategy_id,
                 version_id=row.strategy_version_id,
                 status=row.status,
                 stage=row.status,
-                processed_bars=35 if row.status == "COMPLETED" else 0,
-                total_bars=35,
-                progress_pct=100.0 if row.status == "COMPLETED" else 0.0,
-                elapsed_ms=max(0, (row.ended_at_ms or wall_clock.now_ms()) - row.started_at_ms),
+                processed_bars=done_bars,
+                total_bars=total_bars,
+                progress_pct=pct,
+                elapsed_ms=int(live_prog.get("elapsed_ms", max(0, (row.ended_at_ms or now_cancel) - row.started_at_ms))),
                 estimated_remaining_ms=0,
                 error_code=None,
                 error_message=row.error_message,
             )
+
+        await ws_hub.publish(
+            {
+                "type": "run_canceled",
+                "run_id": resp_obj.run_id,
+                "env": resp_obj.env,
+                "strategy_id": resp_obj.strategy_id,
+                "status": resp_obj.status,
+                "processed_bars": resp_obj.processed_bars,
+                "total_bars": resp_obj.total_bars,
+                "ts_ms": wall_clock.now_ms(),
+            }
+        )
+        return resp_obj
 
     @app.get("/api/v1/runs/{env}/{run_id}/report")
     def get_backtest_report(
@@ -1394,6 +1775,19 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 .scalars()
                 .all()
             )
+            sig_rows = list(
+                session.execute(
+                    select(SignalTraceRecord)
+                    .where(SignalTraceRecord.env == run_env.value, SignalTraceRecord.run_id == run_id)
+                    .order_by(SignalTraceRecord.signal_ts_ms.asc())
+                )
+                .scalars()
+                .all()
+            )
+            sig_by_cid: dict[str, SignalTraceRecord] = {}
+            for sr in sig_rows:
+                if sr.client_order_id:
+                    sig_by_cid[sr.client_order_id] = sr
 
             chart_bars = [
                 ChartBarPoint(
@@ -1406,20 +1800,93 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 )
                 for b in raw_bars
             ]
-            markers = [
-                ChartTradeMarker(
-                    time_sec=int((f.exchange_ts_ms // 60_000) * 60),
-                    side=f.side,
-                    price=format_decimal(f.price),
-                    qty=format_decimal(f.quantity),
-                    client_order_id=f.client_order_id,
-                    fill_id=f.fill_id,
-                    realized_pnl=format_decimal(f.realized_pnl),
-                    fee=format_decimal(f.fee),
-                    liquidity=f.liquidity,
+
+            running_pos = ZERO
+            markers: list[ChartTradeMarker] = []
+            for f in fills:
+                signed_qty = f.quantity if f.side.upper() == "BUY" else -f.quantity
+                prev_pos = running_pos
+                new_pos = prev_pos + signed_qty
+                running_pos = new_pos
+
+                if f.side.upper() == "BUY":
+                    if prev_pos == ZERO:
+                        action_lbl = "开多 BUY"
+                    elif prev_pos > ZERO:
+                        action_lbl = "加多 BUY"
+                    elif new_pos == ZERO:
+                        action_lbl = "平空 BUY"
+                    elif new_pos > ZERO:
+                        action_lbl = "反手开多 BUY"
+                    else:
+                        action_lbl = "减空 BUY"
+                else:
+                    if prev_pos > ZERO and new_pos == ZERO:
+                        action_lbl = "平多 SELL"
+                    elif prev_pos > ZERO and new_pos > ZERO:
+                        action_lbl = "减多 SELL"
+                    elif prev_pos > ZERO and new_pos < ZERO:
+                        action_lbl = "反手开空 SELL"
+                    elif prev_pos == ZERO:
+                        action_lbl = "开空 SELL"
+                    else:
+                        action_lbl = "加空 SELL"
+
+                sig_rec = sig_by_cid.get(f.client_order_id)
+                sig_reason = ""
+                if sig_rec and isinstance(sig_rec.payload_json, dict):
+                    sig_reason = str(
+                        sig_rec.payload_json.get("reason")
+                        or sig_rec.payload_json.get("action")
+                        or sig_rec.intent_type
+                        or ""
+                    )
+
+                markers.append(
+                    ChartTradeMarker(
+                        time_sec=int((f.exchange_ts_ms // 60_000) * 60),
+                        ts_ms=f.exchange_ts_ms,
+                        side=f.side,
+                        action_label=action_lbl,
+                        signal_reason=sig_reason,
+                        price=format_decimal(f.price),
+                        qty=format_decimal(f.quantity),
+                        quote_qty=format_decimal(f.quote_qty),
+                        client_order_id=f.client_order_id,
+                        fill_id=f.fill_id,
+                        realized_pnl=format_decimal(f.realized_pnl),
+                        fee=format_decimal(f.fee),
+                        slippage_bps=format_decimal(f.slippage_bps),
+                        position_after=format_decimal(new_pos),
+                        liquidity=f.liquidity,
+                    )
                 )
-                for f in fills
-            ]
+
+            round_trips: list[ChartRoundTripPair] = []
+            raw_trades = (
+                (row.report_json or {}).get("per_trade_attribution")
+                or (row.report_json or {}).get("trades")
+                if isinstance(row.report_json, dict)
+                else None
+            )
+            if isinstance(raw_trades, list):
+                for idx_t, tr in enumerate(raw_trades, start=1):
+                    ent_ms = int(tr.get("entry_ts_ms", 0))
+                    ext_ms = int(tr.get("exit_ts_ms", 0))
+                    round_trips.append(
+                        ChartRoundTripPair(
+                            trade_index=idx_t,
+                            side=str(tr.get("side", "LONG")),
+                            qty=str(tr.get("quantity") or tr.get("qty") or "0"),
+                            entry_time_sec=int((ent_ms // 60_000) * 60),
+                            exit_time_sec=int((ext_ms // 60_000) * 60),
+                            entry_price=float(tr.get("entry_price", 0.0)),
+                            exit_price=float(tr.get("exit_price", 0.0)),
+                            net_pnl=float(tr.get("net_pnl", 0.0)),
+                            fees=float(tr.get("fees", 0.0)),
+                            holding_ms=int(tr.get("holding_ms", max(0, ext_ms - ent_ms))),
+                        )
+                    )
 
             init_eq = float(eq_rows[0].equity) if eq_rows else 10000.0
             first_close = float(raw_bars[0].close) if raw_bars else 1.0
@@ -1450,6 +1917,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 symbol_spec=_spec_to_summary(spec),
                 bars=chart_bars,
                 trade_markers=markers,
+                round_trips=round_trips,
                 equity_series=eq_series,
             )
 
@@ -1569,68 +2037,142 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         sort_dir: str = Query(default="desc"),
         limit: int = Query(default=100, ge=1, le=1000),
         offset: int = Query(default=0, ge=0),
+        cursor: str | None = Query(default=None, description="Keyset cursor '<created_ts_ms>:<id>'"),
         _: ActorPrincipal = Depends(require_min_role(Role.VIEWER)),
     ) -> LedgerOrdersQueryResponse:
         with sf() as session:
-            stmt = select(OrderRecord)
+            filters = []
             if env and env.lower() != "all":
-                stmt = stmt.where(OrderRecord.env == env.lower())
+                filters.append(OrderRecord.env == env.lower())
             if strategy_id:
-                stmt = stmt.where(OrderRecord.strategy_id == strategy_id)
+                filters.append(OrderRecord.strategy_id == strategy_id)
             if run_id:
-                stmt = stmt.where(OrderRecord.run_id == run_id)
+                filters.append(OrderRecord.run_id == run_id)
             if symbol:
-                stmt = stmt.where(OrderRecord.symbol == symbol)
+                filters.append(OrderRecord.symbol == symbol)
             if side:
-                stmt = stmt.where(OrderRecord.side == side.upper())
+                filters.append(OrderRecord.side == side.upper())
             if status:
                 statuses = [s.strip().upper() for s in status.split(",") if s.strip()]
                 if statuses:
-                    stmt = stmt.where(OrderRecord.status.in_(statuses))
+                    filters.append(OrderRecord.status.in_(statuses))
             if start_ts_ms is not None:
-                stmt = stmt.where(OrderRecord.created_ts_ms >= start_ts_ms)
+                filters.append(OrderRecord.created_ts_ms >= start_ts_ms)
             if end_ts_ms is not None:
-                stmt = stmt.where(OrderRecord.created_ts_ms <= end_ts_ms)
+                filters.append(OrderRecord.created_ts_ms <= end_ts_ms)
             if q:
                 needle = f"%{q.strip()}%"
-                stmt = stmt.where(
+                filters.append(
                     OrderRecord.client_order_id.ilike(needle)
                     | OrderRecord.run_id.ilike(needle)
                     | OrderRecord.strategy_id.ilike(needle)
                 )
 
-            all_matched = list(session.execute(stmt).scalars().all())
+            base_stmt = select(OrderRecord)
+            if filters:
+                base_stmt = base_stmt.where(*filters)
 
-            # Load fills for matched orders to compute fill_count & realized_pnl per order
-            cids = [o.client_order_id for o in all_matched]
+            # Summary metrics over filtered orders (note StrictDecimalColumn stores canonical text)
+            all_summary_rows = list(
+                session.execute(
+                    select(
+                        OrderRecord.env,
+                        OrderRecord.run_id,
+                        OrderRecord.client_order_id,
+                        OrderRecord.status,
+                        OrderRecord.filled_qty,
+                        OrderRecord.avg_fill_price,
+                        OrderRecord.fee_total,
+                    ).where(*filters)
+                    if filters
+                    else select(
+                        OrderRecord.env,
+                        OrderRecord.run_id,
+                        OrderRecord.client_order_id,
+                        OrderRecord.status,
+                        OrderRecord.filled_qty,
+                        OrderRecord.avg_fill_price,
+                        OrderRecord.fee_total,
+                    )
+                ).all()
+            )
+            total_count = len(all_summary_rows)
+            total_notional = sum(((r[4] or ZERO) * (r[5] or ZERO) for r in all_summary_rows), ZERO)
+            total_fees = sum(((r[6] or ZERO) for r in all_summary_rows), ZERO)
+            filled_cnt = sum(1 for r in all_summary_rows if r[3] == "FILLED")
+            rejected_cnt = sum(1 for r in all_summary_rows if r[3] == "REJECTED")
+
+            # Compute realized PnL via SQL JOIN against FillRecord without IN-list limits
+            pnl_join_stmt = select(FillRecord.realized_pnl).join(
+                OrderRecord,
+                (FillRecord.env == OrderRecord.env)
+                & (FillRecord.run_id == OrderRecord.run_id)
+                & (FillRecord.client_order_id == OrderRecord.client_order_id),
+            )
+            if filters:
+                pnl_join_stmt = pnl_join_stmt.where(*filters)
+            total_realized = sum((p or ZERO for p in session.execute(pnl_join_stmt).scalars().all()), ZERO)
+
+            is_desc = sort_dir.lower() != "asc"
+            use_keyset = sort_by not in {"quantity", "filled_qty", "avg_fill_price", "status", "symbol"}
+
+            next_cursor: str | None = None
+            has_more = False
+
+            if use_keyset:
+                page_stmt = base_stmt
+                if cursor:
+                    try:
+                        c_ts_str, c_id_str = cursor.split(":", 1)
+                        c_ts = int(c_ts_str)
+                        c_id = int(c_id_str)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=f"Invalid cursor format: {cursor}") from exc
+                    if is_desc:
+                        page_stmt = page_stmt.where(
+                            (OrderRecord.created_ts_ms < c_ts)
+                            | ((OrderRecord.created_ts_ms == c_ts) & (OrderRecord.id < c_id))
+                        )
+                    else:
+                        page_stmt = page_stmt.where(
+                            (OrderRecord.created_ts_ms > c_ts)
+                            | ((OrderRecord.created_ts_ms == c_ts) & (OrderRecord.id > c_id))
+                        )
+                order_cols = (
+                    (OrderRecord.created_ts_ms.desc(), OrderRecord.id.desc())
+                    if is_desc
+                    else (OrderRecord.created_ts_ms.asc(), OrderRecord.id.asc())
+                )
+                page_stmt = page_stmt.order_by(*order_cols)
+                if not cursor and offset > 0:
+                    page_stmt = page_stmt.offset(offset)
+                fetched = list(session.execute(page_stmt.limit(limit + 1)).scalars().all())
+                has_more = len(fetched) > limit
+                sliced = fetched[:limit]
+                if has_more and sliced:
+                    last_row = sliced[-1]
+                    next_cursor = f"{last_row.created_ts_ms}:{last_row.id}"
+            else:
+                all_matched = list(session.execute(base_stmt).scalars().all())
+                all_matched.sort(key=lambda r: getattr(r, sort_by) or 0, reverse=is_desc)
+                sliced = all_matched[offset : offset + limit]
+                has_more = (offset + len(sliced)) < total_count
+                if has_more and sliced:
+                    last_row = sliced[-1]
+                    next_cursor = f"{last_row.created_ts_ms}:{last_row.id}"
+
+            # Load fills ONLY for the current page's sliced orders (bounded by `limit`)
+            page_cids = [o.client_order_id for o in sliced]
             fills_by_order: dict[tuple[str, str, str], list[FillRecord]] = {}
-            if cids:
+            if page_cids:
                 fill_rows = list(
-                    session.execute(select(FillRecord).where(FillRecord.client_order_id.in_(cids)))
+                    session.execute(select(FillRecord).where(FillRecord.client_order_id.in_(page_cids)))
                     .scalars()
                     .all()
                 )
                 for f in fill_rows:
                     fills_by_order.setdefault((f.env, f.run_id, f.client_order_id), []).append(f)
 
-            total_notional = sum((o.filled_qty * o.avg_fill_price for o in all_matched), ZERO)
-            total_fees = sum((o.fee_total for o in all_matched), ZERO)
-            total_realized = sum(
-                (
-                    f.realized_pnl
-                    for o in all_matched
-                    for f in fills_by_order.get((o.env, o.run_id, o.client_order_id), [])
-                ),
-                ZERO,
-            )
-            filled_cnt = sum(1 for o in all_matched if o.status == "FILLED")
-            rejected_cnt = sum(1 for o in all_matched if o.status == "REJECTED")
-
-            reverse = sort_dir.lower() != "asc"
-            sort_attr = sort_by if sort_by in {"created_ts_ms", "quantity", "filled_qty", "avg_fill_price", "status", "symbol"} else "created_ts_ms"
-            all_matched.sort(key=lambda r: getattr(r, sort_attr) or 0, reverse=reverse)
-
-            sliced = all_matched[offset : offset + limit]
             specs_map: dict[str, SymbolSpecSummary] = {}
             items: list[LedgerOrderRow] = []
             for o in sliced:
@@ -1670,11 +2212,13 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 )
 
             return LedgerOrdersQueryResponse(
-                total=len(all_matched),
+                total=total_count,
                 limit=limit,
                 offset=offset,
+                next_cursor=next_cursor,
+                has_more=has_more,
                 summary=LedgerQuerySummary(
-                    order_count=len(all_matched),
+                    order_count=total_count,
                     filled_count=filled_cnt,
                     rejected_count=rejected_cnt,
                     total_notional_usdt=format_decimal(total_notional),

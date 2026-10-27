@@ -38,19 +38,20 @@ class DeterministicRuleLLMProvider(LLMCodeGenerator):
         fn_name = "ema" if spec.archetype == "ema_crossover" else "sma"
         if spec.archetype == "rsi_reversion":
             return f'''from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from quant_platform.core.enums import OrderType, SignalAction
 from quant_platform.core.interfaces import Strategy
 from quant_platform.core.models import Bar, Signal
 from quant_platform.strategy.indicators import rsi
+from quant_platform.strategy.ui_meta import ui_param
 
 
 class NLGeneratedRsiParams(BaseModel):
-    rsi_window: int = Field(default={spec.rsi_window}, ge=2, le=200)
-    oversold: Decimal = Field(default=Decimal("{spec.rsi_oversold}"))
-    overbought: Decimal = Field(default=Decimal("{spec.rsi_overbought}"))
-    order_qty: Decimal = Field(default=Decimal("{spec.order_qty}"))
-
+    rsi_window: int = ui_param({spec.rsi_window}, ge=2, le=200, ui_group="signal", unit="Bars", description="RSI 计算回看周期")
+    oversold: Decimal = ui_param(Decimal("{spec.rsi_oversold}"), ui_group="signal", unit="RSI", description="超卖开多阈值")
+    overbought: Decimal = ui_param(Decimal("{spec.rsi_overbought}"), ui_group="signal", unit="RSI", description="超买平仓阈值")
+    order_qty: Decimal = ui_param(Decimal("{spec.order_qty}"), ui_group="risk_sizing", unit="BTC", danger_level="high", danger_hint="单笔委托基础资产数量，放大将等比例增加保证金占用与强平风险")
+''' + f'''
 
 class NLGeneratedStrategy(Strategy):
     ParamModel = NLGeneratedRsiParams
@@ -98,17 +99,18 @@ class NLGeneratedStrategy(Strategy):
 '''
 
         return f'''from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from quant_platform.core.enums import OrderType, SignalAction
 from quant_platform.core.interfaces import Strategy
 from quant_platform.core.models import Bar, Signal
 from quant_platform.strategy.indicators import {fn_name}
+from quant_platform.strategy.ui_meta import ui_param
 
 
 class NLGeneratedCrossoverParams(BaseModel):
-    fast_window: int = Field(default={spec.fast_window}, ge=2, le=200)
-    slow_window: int = Field(default={spec.slow_window}, ge=3, le=500)
-    order_qty: Decimal = Field(default=Decimal("{spec.order_qty}"))
+    fast_window: int = ui_param({spec.fast_window}, ge=2, le=200, ui_group="signal", unit="Bars", description="快线周期窗口")
+    slow_window: int = ui_param({spec.slow_window}, ge=3, le=500, ui_group="signal", unit="Bars", description="慢线周期窗口")
+    order_qty: Decimal = ui_param(Decimal("{spec.order_qty}"), ui_group="risk_sizing", unit="BTC", danger_level="high", danger_hint="单笔下单数量，放大将直接提升单笔名义敞口与保证金需求")
 
 
 class NLGeneratedStrategy(Strategy):

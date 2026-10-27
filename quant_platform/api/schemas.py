@@ -99,6 +99,8 @@ class LaunchRunRequest(BaseModel):
     initial_usdt: str = "10000"
     leverage: str = "3"
     margin_mode: str = "CROSS"
+    async_mode: bool = False
+    step_delay_ms: int = Field(default=0, ge=0, le=200)
 
 
 class LaunchRunResponse(BaseModel):
@@ -213,14 +215,33 @@ class ChartBarPoint(BaseModel):
 
 class ChartTradeMarker(BaseModel):
     time_sec: int
+    ts_ms: int = 0
     side: str
+    action_label: str = ""
+    signal_reason: str = ""
     price: str
     qty: str
+    quote_qty: str = "0"
     client_order_id: str
     fill_id: str
     realized_pnl: str
     fee: str
+    slippage_bps: str = "0"
+    position_after: str = "0"
     liquidity: str
+
+
+class ChartRoundTripPair(BaseModel):
+    trade_index: int
+    side: str
+    qty: str
+    entry_time_sec: int
+    exit_time_sec: int
+    entry_price: float
+    exit_price: float
+    net_pnl: float
+    fees: float
+    holding_ms: int
 
 
 class ChartEquityPoint(BaseModel):
@@ -238,6 +259,7 @@ class RunChartDataResponse(BaseModel):
     symbol_spec: SymbolSpecSummary
     bars: list[ChartBarPoint]
     trade_markers: list[ChartTradeMarker]
+    round_trips: list[ChartRoundTripPair] = Field(default_factory=list)
     equity_series: list[ChartEquityPoint]
 
 
@@ -339,6 +361,8 @@ class LedgerOrdersQueryResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    next_cursor: str | None = None
+    has_more: bool = False
     summary: LedgerQuerySummary
     symbol_specs: dict[str, SymbolSpecSummary]
     items: list[LedgerOrderRow]

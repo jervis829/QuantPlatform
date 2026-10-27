@@ -49,6 +49,11 @@ export interface QuantDataTableProps<TData> {
   enableVirtualScroll?: boolean;
   maxBodyHeightPx?: number;
   defaultPageSize?: number;
+  disableClientPagination?: boolean;
+  totalCountOverride?: number;
+  hasNextPage?: boolean;
+  isFetchingNextPage?: boolean;
+  onLoadMore?: () => void;
   syncToUrl?: boolean;
   emptyNode?: React.ReactNode;
   toolbarExtra?: React.ReactNode;
@@ -64,6 +69,11 @@ export function QuantDataTable<TData>({
   enableVirtualScroll = true,
   maxBodyHeightPx = 440,
   defaultPageSize = 50,
+  disableClientPagination = false,
+  totalCountOverride,
+  hasNextPage = false,
+  isFetchingNextPage = false,
+  onLoadMore,
   syncToUrl = true,
   emptyNode,
   toolbarExtra,
@@ -170,7 +180,7 @@ export function QuantDataTable<TData>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    ...(disableClientPagination ? {} : { getPaginationRowModel: getPaginationRowModel() }),
     getExpandedRowModel: getExpandedRowModel(),
   });
 
@@ -179,11 +189,30 @@ export function QuantDataTable<TData>({
   const rowHeight = DESIGN_TOKENS.densityRowHeightPx[tableDensity];
   const cellPad = DESIGN_TOKENS.densityCellPadding[tableDensity];
 
-  const useVirtual = enableVirtualScroll && rows.length > 25 && Object.keys(expanded).length === 0;
+  // Flatten data rows + expanded detail rows so @tanstack/react-virtual
+  // keeps DOM virtualized with dynamic ResizeObserver measurement (`measureElement`)
+  // even when multiple Order -> Fills subpanels are expanded simultaneously!
+  const displayItems = useMemo(() => {
+    const out: Array<
+      | { kind: "row"; key: string; row: (typeof rows)[number] }
+      | { kind: "expanded"; key: string; row: (typeof rows)[number] }
+    > = [];
+    for (const r of rows) {
+      out.push({ kind: "row", key: r.id, row: r });
+      if (r.getIsExpanded() && renderExpandedRow) {
+        out.push({ kind: "expanded", key: `${r.id}__expanded`, row: r });
+      }
+    }
+    return out;
+  }, [rows, renderExpandedRow]);
+
+  const useVirtual = enableVirtualScroll && displayItems.length > 20;
   const rowVirtualizer = useVirtualizer({
-    count: rows.length,
+    count: displayItems.length,
     getScrollElement: () => scrollParentRef.current,
-    estimateSize: () => rowHeight,
+    getItemKey: (idx) => displayItems[idx]?.key ?? idx,
+    estimateSize: (idx) =>
+      displayItems[idx]?.kind === "expanded" ? 176 : rowHeight,
     overscan: 8,
   });
 
@@ -194,6 +223,15 @@ export function QuantDataTable<TData>({
     useVirtual && virtualItems && virtualItems.length > 0
       ? rowVirtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end
       : 0;
+
+  // Trigger keyset cursor infinite-scroll fetch when nearing bottom of scroll container
+  const handleScrollContainer = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!hasNextPage || isFetchingNextPage || !onLoadMore) return;
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 180) {
+      onLoadMore();
+    }
+  };
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -292,6 +330,7 @@ export function QuantDataTable<TData>({
       {/* Table Scroll Container */}
       <div
         ref={scrollParentRef}
+        onScroll={handleScrollContainer}
         style={{ maxHeight: `${maxBodyHeightPx}px` }}
         className="overflow-auto"
       >
@@ -375,15 +414,40 @@ export function QuantDataTable<TData>({
               <>
                 {paddingTop > 0 && (
                   <tr>
-                    <td style={{ height: `${paddingTop}px` }} />
+                    <td
+                      colSpan={table.getVisibleLeafColumns().length}
+                      style={{ height: `${paddingTop}px` }}
+                    />
                   </tr>
                 )}
                 {(useVirtual && virtualItems
-                  ? virtualItems.map((vi) => rows[vi.index])
-                  : rows
-                ).map((row) => (
-                  <React.Fragment key={row.id}>
+                  ? virtualItems.map((vi) => ({
+                      item: displayItems[vi.index],
+                      vIndex: vi.index,
+                    }))
+                  : displayItems.map((item, idx) => ({ item, vIndex: idx }))
+                ).map(({ item, vIndex }) => {
+                  if (!item) return null;
+                  const row = item.row;
+                  if (item.kind === "expanded") {
+                    return (
+                      <tr
+                        key={item.key}
+                        data-index={vIndex}
+                        ref={useVirtual ? rowVirtualizer.measureElement : undefined}
+                        className="border-b border-slate-800 bg-slate-950/80"
+                      >
+                        <td colSpan={row.getVisibleCells().length} className="p-3">
+                          {renderExpandedRow?.(row.original)}
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return (
                     <tr
+                      key={item.key}
+                      data-index={vIndex}
+                      ref={useVirtual ? rowVirtualizer.measureElement : undefined}
                       onClick={() => onRowClick?.(row.original)}
                       className={cn(
                         "border-b border-slate-800/70 transition-colors hover:bg-slate-800/45",
@@ -408,21 +472,14 @@ export function QuantDataTable<TData>({
                         );
                       })}
                     </tr>
-                    {row.getIsExpanded() && renderExpandedRow && (
-                      <tr className="border-b border-slate-800 bg-slate-950/80">
-                        <td
-                          colSpan={row.getVisibleCells().length}
-                          className="p-3"
-                        >
-                          {renderExpandedRow(row.original)}
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                ))}
+                  );
+                })}
                 {paddingBottom > 0 && (
                   <tr>
-                    <td style={{ height: `${paddingBottom}px` }} />
+                    <td
+                      colSpan={table.getVisibleLeafColumns().length}
+                      style={{ height: `${paddingBottom}px` }}
+                    />
                   </tr>
                 )}
               </>
@@ -431,49 +488,76 @@ export function QuantDataTable<TData>({
         </table>
       </div>
 
-      {/* Footer: Row Count & Pagination */}
+      {/* Footer: Row Count & Pagination / Keyset Infinite Load */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
         <div className="font-mono tabular-nums-strict">
-          共 <strong className="text-slate-200">{table.getFilteredRowModel().rows.length}</strong> 条记录
-          {table.getPageCount() > 1 && (
-            <span className="ml-2">
-              · 第 {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} 页
-            </span>
+          {totalCountOverride !== undefined ? (
+            <>
+              已加载 <strong className="text-slate-200">{table.getFilteredRowModel().rows.length}</strong> /{" "}
+              <strong className="text-slate-200">{totalCountOverride}</strong> 条记录
+              <span className="ml-2 text-sky-400/90">· Keyset Cursor + 动态虚拟行测量</span>
+            </>
+          ) : (
+            <>
+              共 <strong className="text-slate-200">{table.getFilteredRowModel().rows.length}</strong> 条记录
+              {!disableClientPagination && table.getPageCount() > 1 && (
+                <span className="ml-2">
+                  · 第 {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} 页
+                </span>
+              )}
+            </>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
-          <select
-            value={table.getState().pagination.pageSize}
-            onChange={(e) => table.setPageSize(Number(e.target.value))}
-            className="h-6 rounded border border-border bg-slate-950 px-1.5 font-mono text-[11px] text-slate-200"
-          >
-            {[20, 50, 100, 250].map((sz) => (
-              <option key={sz} value={sz}>
-                {sz} 条/页
-              </option>
-            ))}
-          </select>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 px-2"
-            disabled={!table.getCanPreviousPage()}
-            onClick={() => table.previousPage()}
-          >
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 px-2"
-            disabled={!table.getCanNextPage()}
-            onClick={() => table.nextPage()}
-          >
-            <ChevronRight className="h-3.5 w-3.5" />
-          </Button>
-        </div>
+        {disableClientPagination ? (
+          <div className="flex items-center gap-2">
+            {hasNextPage && onLoadMore && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 px-2.5 font-mono text-[11px]"
+                disabled={isFetchingNextPage}
+                onClick={onLoadMore}
+              >
+                {isFetchingNextPage ? "游标拉取中..." : "加载下一页游标"}
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5">
+            <select
+              value={table.getState().pagination.pageSize}
+              onChange={(e) => table.setPageSize(Number(e.target.value))}
+              className="h-6 rounded border border-border bg-slate-950 px-1.5 font-mono text-[11px] text-slate-200"
+            >
+              {[20, 50, 100, 250].map((sz) => (
+                <option key={sz} value={sz}>
+                  {sz} 条/页
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2"
+              disabled={!table.getCanPreviousPage()}
+              onClick={() => table.previousPage()}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2"
+              disabled={!table.getCanNextPage()}
+              onClick={() => table.nextPage()}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

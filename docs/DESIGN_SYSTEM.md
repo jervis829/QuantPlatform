@@ -57,11 +57,11 @@
 | `components/ui/button.tsx` | `Button`, `BacktestActionButton`, `ShadowActionButton`, `LiveDangerActionButton`, `IsolatedDangerZone` | 操作风险分级按钮与实盘斜纹物理隔离区 |
 | `components/quant/badges.tsx` | `EnvBadge`, `ApprovalBadge`, `SeverityBadge`, `RunStatusBadge` | 环境、人工审批门禁、差异严重度与运行状态徽章 |
 | `components/quant/numeric-display.tsx` | `NumericDisplay`, `KpiMetricCard` | 统一精度/极性数值渲染与一眼层指标卡 |
-| `components/quant/state-views.tsx` | `EmptyState`, `RunLoadingState`, `ActionableErrorState` | 强制空状态、多阶段加载态、带修复建议的错误态 |
+| `components/quant/state-views.tsx` | `EmptyState`, `RunLoadingState`, `ActionableErrorState` | 强制空状态、流式逐根 K 线进度/ETA/CancellationToken 中断加载态、带修复建议的错误态 |
 | `components/quant/confirm-dialog.tsx` | `ConfirmActionDialog`, `KillSwitchModal` | 支持确认词解锁的分级弹窗与挂单/仓位预览二次确认停机框 |
-| `components/quant/data-table.tsx` | `QuantDataTable` | TanStack Table + Virtual 虚拟滚动、列排序/筛选/显隐、三档密度、分页、URL 参数同步与行展开 |
-| `components/quant/chart-container.tsx` | `FinancialChartContainer` | `lightweight-charts` K线、买卖点箭头、成交量副图、净值/基准/水下回撤同步缩放、十字光标读数、表格行点击时间轴定位、CSV/PNG 导出 |
-| `components/strategy/schema-param-editor.tsx` | `SchemaParamEditor` | Pydantic JSON Schema 自动语义分组、默认值/范围/单位提示、仓位放大风险警告、与已保存版本的实时前后 Diff |
+| `components/quant/data-table.tsx` | `QuantDataTable` | TanStack Table + `@tanstack/react-virtual` `measureElement` 动态行高虚拟滚动（展开 `Order -> Fills` 仍保持 DOM 虚拟化）、Keyset Cursor 无限分页、列排序/筛选/显隐、三档密度与 URL 同步 |
+| `components/quant/chart-container.tsx` | `FinancialChartContainer` | `lightweight-charts` 全功能 K 线工作站：`1m/5m/15m/1h` 多周期聚合、`MA5/10/20` / `EMA20` / `BOLL` 指标叠加、全量买卖点箭头 + 开平仓持仓虚线轨迹、悬浮成交检查器卡片、买卖点前后步进器与时间轴胶囊条、净值/基准/水下回撤同步副图、全屏与 CSV/PNG 导出 |
+| `components/strategy/schema-param-editor.tsx` | `SchemaParamEditor` | 优先读取后端 `quant_platform.strategy.ui_param` 显式元数据契约（`ui_group` / `unit` / `danger_level` / `danger_hint`），兼容启发式回退、实时前后 Diff 与仓位放大警告 |
 | `components/layout/*` | `AppShell`, `GlobalStatusBar`, `SidebarNav`, `CommandPalette`, `NotificationCenter` | 全局桌面端骨架（1440px 基准 / 1280px 无水平滚动）、`Cmd/Ctrl+K` 全局检索、常驻通知抽屉 |
 
 ---

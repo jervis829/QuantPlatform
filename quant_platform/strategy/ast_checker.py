@@ -27,6 +27,7 @@ ALLOWED_IMPORT_PREFIXES: frozenset[str] = frozenset(
         "quant_platform.core.interfaces",
         "quant_platform.core.decimal_utils",
         "quant_platform.strategy.indicators",
+        "quant_platform.strategy.ui_meta",
     }
 )
 

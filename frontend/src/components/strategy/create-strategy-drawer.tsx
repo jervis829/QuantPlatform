@@ -18,17 +18,41 @@ import {
 } from "../ui/dialog";
 
 const DEFAULT_PYTHON_TEMPLATE = `from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from quant_platform.core.enums import OrderType, SignalAction
 from quant_platform.core.interfaces import Strategy
 from quant_platform.core.models import Bar, Signal
 from quant_platform.strategy.indicators import sma
+from quant_platform.strategy.ui_meta import ui_param
 
 
 class SmaCrossParams(BaseModel):
-    fast_window: int = Field(default=5, ge=2, le=100)
-    slow_window: int = Field(default=12, ge=3, le=300)
-    order_qty: Decimal = Field(default=Decimal("0.05"))
+    fast_window: int = ui_param(
+        5,
+        ge=2,
+        le=100,
+        title="快线均线周期",
+        ui_group="signal",
+        unit="Bars (K线根数)",
+        danger_level="safe",
+    )
+    slow_window: int = ui_param(
+        12,
+        ge=3,
+        le=300,
+        title="慢线均线周期",
+        ui_group="signal",
+        unit="Bars (K线根数)",
+        danger_level="safe",
+    )
+    order_qty: Decimal = ui_param(
+        Decimal("0.05"),
+        title="单笔下单数量",
+        ui_group="risk_sizing",
+        unit="基础资产数量",
+        danger_level="high",
+        danger_hint="放大下单数量会直接提高单笔名义敞口与保证金占用。",
+    )
 
 
 class SmaCrossStrategy(Strategy):
