@@ -34,8 +34,12 @@ services:
       dockerfile: Dockerfile.api
     restart: unless-stopped
     environment:
-      QUANT_DB_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
-      REDIS_URL: redis://redis:6379/0
+      QUANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
+      QUANT_REDIS_URL: redis://redis:6379/0
+      QP_VIEWER_API_KEY: ${QP_VIEWER_API_KEY:-viewer-dev-token}
+      QP_RESEARCHER_API_KEY: ${QP_RESEARCHER_API_KEY:-researcher-dev-token}
+      QP_OPERATOR_API_KEY: ${QP_OPERATOR_API_KEY:-operator-dev-token}
+      QP_ADMIN_API_KEY: ${QP_ADMIN_API_KEY:-admin-dev-token}
       TZ: UTC
     ports:
       - "8000:8000"
@@ -55,10 +59,10 @@ services:
       context: .
       dockerfile: Dockerfile.api
     restart: unless-stopped
-    command: ["python", "scripts/demo_e2e.py", "--supervisor-check"]
+    command: ["python", "-m", "quant_platform.observability.worker_main"]
     environment:
-      QUANT_DB_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
-      REDIS_URL: redis://redis:6379/0
+      QUANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
+      QUANT_REDIS_URL: redis://redis:6379/0
       TZ: UTC
     depends_on:
       postgres:
@@ -72,7 +76,7 @@ services:
       dockerfile: ../Dockerfile.ui
     restart: unless-stopped
     environment:
-      QUANT_API_PROXY_TARGET: http://api:8000
+      BACKEND_INTERNAL_URL: http://api:8000
       TZ: UTC
     ports:
       - "3000:3000"
