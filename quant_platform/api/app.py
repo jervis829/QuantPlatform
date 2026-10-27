@@ -83,11 +83,12 @@ from quant_platform.core.enums import (
     ApprovalStatus,
     ContractType,
     MarginMode,
+    PositionSide,
     ReconciliationTier,
     RunEnv,
 )
 from quant_platform.core.hashing import canonical_json, sha256_hex
-from quant_platform.core.models import Bar, StrategyConfig, SymbolSpec
+from quant_platform.core.models import Bar, Position, StrategyConfig, SymbolSpec
 from quant_platform.data.clock import SimulatedClock
 from quant_platform.data.feed import StreamingDataFeed
 from quant_platform.db.ledger import UnifiedLedgerRepository
@@ -241,15 +242,48 @@ def _serialize_version(v: StrategyVersionRecord) -> StrategyVersionResponse:
     )
 
 
+_SEV_ORDER_WEIGHT = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
+
+
 def _extract_item_usd_drift(item: dict[str, Any]) -> Decimal:
-    for key in ("notional_diff", "abs_diff_usdt", "diff_usdt", "delta_pnl", "abs_diff", "diff"):
+    for key in ("abs_drift_usdt", "notional_diff", "abs_diff_usdt", "diff_usdt", "delta_pnl", "abs_diff", "diff"):
         raw = item.get(key)
         if raw is not None:
             try:
                 return abs(to_strict_decimal(str(raw)))
             except Exception:
                 continue
+
+    item_type = str(item.get("type", "")).upper()
+    sym = str(item.get("symbol", "")).upper()
+    ref_px = Decimal("3000") if sym.startswith("ETH") else Decimal("50000")
+
+    try:
+        if item_type == "POSITION_QTY_MISMATCH" and item.get("delta") is not None:
+            return abs(to_strict_decimal(str(item["delta"]))) * ref_px
+        if item_type in {"MISSING_LOCAL_FILL", "MISSING_FILL"} and item.get("exchange_value") is not None:
+            return abs(to_strict_decimal(str(item["exchange_value"]))) * ref_px
+        if item_type in {"MISSING_LOCAL_FUNDING", "FUNDING_MISMATCH"} and item.get("exchange_value") is not None:
+            return abs(to_strict_decimal(str(item["exchange_value"])))
+        if item_type == "BALANCE_TOTAL_MISMATCH" and item.get("delta") is not None:
+            return abs(to_strict_decimal(str(item["delta"])))
+    except Exception:
+        return ZERO
     return ZERO
+
+
+def _enrich_and_sort_recon_items(raw_items: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], Decimal]:
+    enriched: list[tuple[int, Decimal, dict[str, Any]]] = []
+    total_drift = ZERO
+    for raw in raw_items or []:
+        drift = _extract_item_usd_drift(raw)
+        total_drift += drift
+        sev = str(raw.get("severity", "LOW")).upper()
+        copied = dict(raw)
+        copied["abs_drift_usdt"] = format_decimal(drift)
+        enriched.append((_SEV_ORDER_WEIGHT.get(sev, 0), drift, copied))
+    enriched.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [x[2] for x in enriched], total_drift
 
 
 def _verify_audit_chain(rows: list[AuditLogRecord]) -> bool:
@@ -1825,12 +1859,11 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             out_items = []
             for r in rows:
                 sev_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-                drift_sum = ZERO
-                for it in r.items_json or []:
+                sorted_items, drift_sum = _enrich_and_sort_recon_items(r.items_json)
+                for it in sorted_items:
                     sv = str(it.get("severity", "LOW")).upper()
                     if sv in sev_counts:
                         sev_counts[sv] += 1
-                    drift_sum += _extract_item_usd_drift(it)
                 out_items.append(
                     {
                         "report_id": r.report_id,
@@ -1844,11 +1877,115 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                         "severity_counts": sev_counts,
                         "total_abs_drift_usdt": format_decimal(drift_sum),
                         "summary": r.summary_json,
-                        "items": r.items_json,
+                        "items": sorted_items,
                         "created_ts_ms": r.created_ts_ms,
                     }
                 )
             return {"items": out_items}
+
+    @app.post("/api/v1/reconciliation/fault-drill", response_model=ReconciliationDetailResponse)
+    def run_reconciliation_fault_drill(
+        principal: ActorPrincipal = Depends(require_min_role(Role.OPERATOR)),
+    ) -> ReconciliationDetailResponse:
+        """
+        Execute a real database-persisted Tier-1 reconciliation drill injecting:
+        1) Position mismatch (local 0.100 BTC vs exchange 0.250 BTC -> +$7,500 USDT CRITICAL)
+        2) Missing fill (fill_id=tr_drill_9001 on cid_drill_entry -> $4,000 USDT CRITICAL)
+        3) Funding payment discrepancy (fp_drill_301 -18.75 USDT -> $18.75 USDT MEDIUM)
+        """
+        now_ms = wall_clock.now_ms()
+        drill_run_id = f"run_lv_drill_{uuid.uuid4().hex[:8]}"
+        drill_clock = SimulatedClock(now_ms)
+        drill_spec = _default_perp_spec()
+        drill_feed = StreamingDataFeed(clock=drill_clock)
+        drill_feed.register_symbol_spec(drill_spec)
+
+        drill_transport = MockRawExchangeTransport(
+            exchange="binance",
+            clock=drill_clock,
+            initial_balances={"USDT": "10000.00"},
+            initial_positions=[
+                {
+                    "symbol": "BTC/USDT:USDT",
+                    "positionAmt": "0.250",
+                    "entryPrice": "50000.0",
+                    "markPrice": "50000.0",
+                    "unRealizedProfit": "0.0",
+                    "leverage": "3",
+                    "marginType": "cross",
+                }
+            ],
+            initial_fills=[
+                {
+                    "id": "tr_drill_9001",
+                    "orderId": "88001",
+                    "clientOrderId": "cid_drill_entry",
+                    "symbol": "BTC/USDT:USDT",
+                    "side": "BUY",
+                    "price": "50000.0",
+                    "qty": "0.080",
+                    "quoteQty": "4000.0",
+                    "commission": "1.60",
+                    "commissionAsset": "USDT",
+                    "maker": False,
+                    "realizedPnl": "0",
+                    "time": now_ms - 15_000,
+                }
+            ],
+            initial_funding=[
+                {
+                    "tranId": "fp_drill_301",
+                    "symbol": "BTC/USDT:USDT",
+                    "income": "-18.75",
+                    "asset": "USDT",
+                    "fundingRate": "0.0003",
+                    "markPrice": "50000.0",
+                    "positionAmt": "0.250",
+                    "time": now_ms - 5_000,
+                }
+            ],
+        )
+
+        with sf() as session:
+            drill_broker = ExchangeBroker(
+                run_id=drill_run_id,
+                strategy_id="strat_recon_drill",
+                exchange="binance",
+                transport=drill_transport,
+                clock=drill_clock,
+                data_feed=drill_feed,
+                ledger=None,
+            )
+            drill_broker.startup_sync()
+
+            ledger = UnifiedLedgerRepository(session)
+            ledger.record_balance_snapshot(
+                drill_broker.query_balance()[0].model_copy(update={"run_id": drill_run_id})
+            )
+            ledger.upsert_position(
+                drill_broker.query_positions()[0].model_copy(
+                    update={
+                        "run_id": drill_run_id,
+                        "quantity": Decimal("0.100"),
+                        "updated_ts_ms": now_ms - 20_000,
+                    }
+                )
+            )
+            reconciler = ThreeTierReconciler(session=session, clock=wall_clock)
+            res = reconciler.reconcile_exchange_vs_local(drill_run_id, drill_broker, auto_heal=False)
+            append_audit_log(
+                session,
+                actor=principal.actor_id,
+                action="RECONCILIATION_FAULT_DRILL",
+                resource_type="reconciliation_report",
+                resource_id=str(res["report_id"]),
+                payload={"drill_run_id": drill_run_id, "discrepancy_count": res["discrepancy_count"]},
+                ts_ms=now_ms,
+            )
+            session.commit()
+            rep_id = str(res["report_id"])
+
+        return get_reconciliation_report_detail(rep_id, principal)
 
     @app.get("/api/v1/reconciliation/reports/{report_id}", response_model=ReconciliationDetailResponse)
     def get_reconciliation_report_detail(
@@ -1862,12 +1999,11 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             if r is None:
                 raise HTTPException(status_code=404, detail=f"Reconciliation report {report_id} not found")
             sev_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-            drift_sum = ZERO
-            for it in r.items_json or []:
+            sorted_items, drift_sum = _enrich_and_sort_recon_items(r.items_json)
+            for it in sorted_items:
                 sv = str(it.get("severity", "LOW")).upper()
                 if sv in sev_counts:
                     sev_counts[sv] += 1
-                drift_sum += _extract_item_usd_drift(it)
             return ReconciliationDetailResponse(
                 report_id=r.report_id,
                 tier=r.tier,
@@ -1880,7 +2016,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 severity_counts=ReconciliationSeverityCounts(**sev_counts),
                 total_abs_drift_usdt=format_decimal(drift_sum),
                 summary=r.summary_json,
-                items=r.items_json,
+                items=sorted_items,
                 created_ts_ms=r.created_ts_ms,
             )
 

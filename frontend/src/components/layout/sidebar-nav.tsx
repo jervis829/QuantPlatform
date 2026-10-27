@@ -6,6 +6,7 @@ import {
   GitCompareArrows,
   Layers,
   Palette,
+  Rocket,
   ScrollText,
   ServerCog,
   ShieldCheck,
@@ -19,19 +20,25 @@ const NAV_ITEMS = [
   {
     href: "/strategies",
     label: "策略工作台",
-    sub: "巡检 · 审批 · 运行",
+    sub: "巡检 · 审批 · 详情",
     icon: Layers,
+  },
+  {
+    href: "/runs/new",
+    label: "分级启动中心",
+    sub: "回测 · 影子 · 实盘向导",
+    icon: Rocket,
   },
   {
     href: "/ledger",
     label: "统一交易记录",
-    sub: "三环境委托与成交",
+    sub: "组合筛选 · 订单展开",
     icon: ScrollText,
   },
   {
     href: "/reconciliation",
     label: "三层对账看板",
-    sub: "一致性与偏差归因",
+    sub: "严重度排序 · 差异下钻",
     icon: GitCompareArrows,
   },
   {
@@ -43,7 +50,7 @@ const NAV_ITEMS = [
   {
     href: "/design-system",
     label: "设计基础与组件库",
-    sub: "批 1 验收陈列页",
+    sub: "Token · 三态 · 规范页",
     icon: Palette,
   },
 ];

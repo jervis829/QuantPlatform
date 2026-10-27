@@ -208,3 +208,22 @@ def test_ui_control_plane_endpoints_end_to_end(tmp_path: Path) -> None:
     recon_det = client.get(f"/api/v1/reconciliation/reports/{rep_id}", headers=admin_hdr)
     assert recon_det.status_code == 200
     assert recon_det.json()["report_id"] == rep_id
+
+    # 6. Batch 4 Discrepancy Fault Drill Verification (Position + Missing Fill + Funding)
+    drill = client.post("/api/v1/reconciliation/fault-drill", headers=admin_hdr)
+    assert drill.status_code == 200
+    d_json = drill.json()
+    assert d_json["passed"] is False
+    assert d_json["discrepancy_count"] == 3
+    assert d_json["total_abs_drift_usdt"] == "11518.75"
+    drill_types = [it["type"] for it in d_json["items"]]
+    assert "POSITION_QTY_MISMATCH" in drill_types
+    assert "MISSING_LOCAL_FILL" in drill_types
+    assert "MISSING_LOCAL_FUNDING" in drill_types
+    # Verify sorted by severity (CRITICAL items precede MEDIUM item)
+    assert d_json["items"][0]["severity"] == "CRITICAL"
+    assert d_json["items"][-1]["severity"] == "MEDIUM"
+    missing_fill_item = next(it for it in d_json["items"] if it["type"] == "MISSING_LOCAL_FILL")
+    assert missing_fill_item["order_id"] == "cid_drill_entry"
+    assert missing_fill_item["fill_id"] == "exfill_tr_drill_9001"
+    assert missing_fill_item["ts_ms"] > 0

@@ -291,6 +291,28 @@ export const quantApi = {
       body: JSON.stringify(body),
     }),
 
+  runReconciliationFaultDrill: (apiKey: string) =>
+    requestJson<ReconciliationDetailResponse>(
+      "/api/v1/reconciliation/fault-drill",
+      apiKey,
+      { method: "POST" }
+    ),
+
+  exportReconciliationReport: async (
+    apiKey: string,
+    reportId: string,
+    fmt: "csv" | "json"
+  ): Promise<string> => {
+    const res = await fetch(
+      `/api/v1/reconciliation/reports/${encodeURIComponent(reportId)}/export?fmt=${fmt}`,
+      { headers: { "X-API-Key": apiKey } }
+    );
+    if (!res.ok) {
+      throw new Error(`Export failed (${res.status})`);
+    }
+    return res.text();
+  },
+
   listReconciliationReports: (apiKey: string) =>
     requestJson<{ items: Array<Record<string, unknown>> }>(
       "/api/v1/reconciliation/reports",

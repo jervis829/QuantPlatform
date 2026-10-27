@@ -555,6 +555,7 @@ export type ApiEndpointPath =
   | "/api/v1/ledger/orders/query"
   | "/api/v1/ledger/orders/{env}/{run_id}/{client_order_id}/fills"
   | "/api/v1/ledger/{table_name}"
+  | "/api/v1/reconciliation/fault-drill"
   | "/api/v1/reconciliation/reports"
   | "/api/v1/reconciliation/reports/{report_id}"
   | "/api/v1/reconciliation/reports/{report_id}/export"
