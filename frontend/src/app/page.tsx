@@ -5,6 +5,7 @@ import { DiffViewer } from "../components/DiffViewer";
 import { DynamicSchemaForm } from "../components/DynamicSchemaForm";
 import { quantApi } from "../lib/apiClient";
 import type {
+  RiskEventItem,
   StrategyDetailResponse,
   StrategySummaryItem,
   StrategyVersionResponse,
@@ -112,7 +113,7 @@ export default function QuantConsolePage() {
   const [shReconRunId, setShReconRunId] = useState("");
   const [lvReconRunId, setLvReconRunId] = useState("");
   const [reconReports, setReconReports] = useState<Array<Record<string, unknown>>>([]);
-  const [riskEvents, setRiskEvents] = useState<Array<Record<string, unknown>>>([]);
+  const [riskEvents, setRiskEvents] = useState<RiskEventItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<Array<Record<string, unknown>>>([]);
   const [flattenOnKill, setFlattenOnKill] = useState(true);
 

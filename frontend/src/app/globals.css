@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 224 44% 5%;
+    --foreground: 214 32% 93%;
+
+    --card: 223 39% 8%;
+    --card-foreground: 214 32% 93%;
+    --elevated: 222 36% 11%;
+
+    --popover: 223 42% 9%;
+    --popover-foreground: 214 32% 93%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 218 28% 15%;
+    --secondary-foreground: 214 32% 91%;
+
+    --muted: 219 27% 14%;
+    --muted-foreground: 215 20% 62%;
+
+    --border: 217 26% 18%;
+    --input: 217 26% 18%;
+    --ring: 217 91% 60%;
+
+    /* Environment semantic colors: Safe (Blue) / Caution (Amber) / Capital-at-Risk (Crimson) */
+    --env-backtest: 217 91% 60%;
+    --env-shadow: 38 92% 52%;
+    --env-live: 350 89% 60%;
+
+    /* Default PnL polarity: green-up / red-down (Global Crypto convention) */
+    --pnl-up: 152 76% 46%;
+    --pnl-down: 350 86% 60%;
+    --pnl-zero: 215 16% 58%;
+  }
+
+  /* Configurable Chinese market convention: red-up / green-down */
+  html[data-pnl-polarity="red-up"] {
+    --pnl-up: 350 86% 60%;
+    --pnl-down: 152 76% 46%;
+  }
+
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    overflow-x: hidden;
+  }
+}
+
+.tabular-nums-strict {
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* Subtle diagonal caution stripe for isolated Live/Capital-at-Risk zones */
+.danger-isolation-stripe {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(244, 63, 94, 0.07),
+    rgba(244, 63, 94, 0.07) 8px,
+    rgba(15, 23, 42, 0.4) 8px,
+    rgba(15, 23, 42, 0.4) 16px
+  );
+}

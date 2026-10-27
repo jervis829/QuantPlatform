@@ -1,8 +1,12 @@
+import "./globals.css";
+import type { Metadata } from "next";
 import React from "react";
+import { AppShell } from "../components/layout/app-shell";
+import { AppProviders } from "../lib/providers";
 
-export const metadata = {
-  title: "QuantPlatform — Multi-Strategy Crypto Trading Console",
-  description: "Self-hosted Backtest / Shadow / Live Crypto Trading & Risk Control Plane",
+export const metadata: Metadata = {
+  title: "QuantPlatform — 三环境同构量化交易管理台",
+  description: "Backtest / Shadow / Live Isomorphic Crypto Quant Trading Platform",
 };
 
 export default function RootLayout({
@@ -11,17 +15,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN">
-      <body
-        style={{
-          margin: 0,
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace",
-          background: "#090d16",
-          color: "#e2e8f0",
-        }}
-      >
-        {children}
+    <html lang="zh-CN" className="dark">
+      <body className="min-h-screen bg-background text-foreground antialiased">
+        <AppProviders>
+          <AppShell>{children}</AppShell>
+        </AppProviders>
       </body>
     </html>
   );
