@@ -235,7 +235,7 @@ export function QuantDataTable<TData>({
 
   return (
     <div className="rounded-lg border border-border bg-card">
-      {/* Toolbar: Search, Column Filter Toggle, Column Visibility, Density Switcher */}
+      {/* Toolbar: Clean Search + Optional Extra + Unified "表格设置" Popover */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
@@ -244,65 +244,74 @@ export function QuantDataTable<TData>({
               type="text"
               value={globalFilter}
               onChange={(e) => setGlobalFilter(e.target.value)}
-              placeholder="快速筛选当前表..."
+              placeholder="搜索当前表格..."
               className="h-7 w-48 rounded border border-input bg-slate-950 pl-8 pr-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none sm:w-56"
             />
           </div>
-          <Button
-            type="button"
-            variant={showColumnFilterRow ? "secondary" : "outline"}
-            size="sm"
-            onClick={() => setShowColumnFilterRow((v) => !v)}
-          >
-            按列筛选
-          </Button>
           {toolbarExtra}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Density Toggle */}
-          <div className="inline-flex items-center rounded border border-border bg-slate-950 p-0.5">
-            <Rows3 className="mx-1.5 h-3.5 w-3.5 text-slate-400" />
-            {(
-              [
-                ["compact", "紧凑"],
-                ["standard", "标准"],
-                ["comfortable", "宽松"],
-              ] as Array<[TableDensity, string]>
-            ).map(([d, label]) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setTableDensity(d)}
-                className={cn(
-                  "rounded px-2 py-0.5 text-[11px] transition-colors",
-                  tableDensity === d
-                    ? "bg-blue-600 text-white font-semibold"
-                    : "text-slate-400 hover:text-slate-200"
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="relative flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowColMenu((v) => !v)}
+          >
+            <Columns3 className="h-3.5 w-3.5" />
+            <span>表格显示设置</span>
+          </Button>
 
-          {/* Column Visibility Dropdown */}
-          <div className="relative">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowColMenu((v) => !v)}
-            >
-              <Columns3 className="h-3.5 w-3.5" />
-              <span>列显隐</span>
-            </Button>
-            {showColMenu && (
-              <div className="absolute right-0 top-8 z-30 w-48 rounded-md border border-border bg-popover p-2 shadow-xl">
-                <div className="mb-1.5 border-b border-border pb-1 text-[11px] font-semibold text-slate-300">
+          {showColMenu && (
+            <div className="absolute right-0 top-8 z-30 w-56 rounded-md border border-border bg-popover p-2.5 shadow-xl space-y-2.5">
+              {/* Row Density */}
+              <div>
+                <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-slate-300">
+                  <Rows3 className="h-3 w-3 text-slate-400" />
+                  <span>行距大小</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1 rounded border border-border bg-slate-950 p-0.5">
+                  {(
+                    [
+                      ["compact", "紧凑"],
+                      ["standard", "标准"],
+                      ["comfortable", "宽松"],
+                    ] as Array<[TableDensity, string]>
+                  ).map(([d, label]) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setTableDensity(d)}
+                      className={cn(
+                        "rounded px-1.5 py-0.5 text-[11px] transition-colors",
+                        tableDensity === d
+                          ? "bg-blue-600 text-white font-semibold"
+                          : "text-slate-400 hover:text-slate-200"
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Per-column Filter Row Toggle */}
+              <label className="flex items-center justify-between rounded border border-slate-800 px-2 py-1.5 text-xs text-slate-200 cursor-pointer hover:bg-slate-800/60">
+                <span>开启逐列条件过滤</span>
+                <input
+                  type="checkbox"
+                  checked={showColumnFilterRow}
+                  onChange={() => setShowColumnFilterRow((v) => !v)}
+                  className="accent-blue-500"
+                />
+              </label>
+
+              {/* Column Visibility */}
+              <div>
+                <div className="mb-1 border-b border-border pb-1 text-[11px] font-semibold text-slate-300">
                   显示 / 隐藏列
                 </div>
-                <div className="max-h-56 space-y-1 overflow-y-auto">
+                <div className="max-h-44 space-y-1 overflow-y-auto">
                   {table
                     .getAllLeafColumns()
                     .filter((col) => col.getCanHide())
@@ -322,8 +331,8 @@ export function QuantDataTable<TData>({
                     ))}
                 </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -493,9 +502,8 @@ export function QuantDataTable<TData>({
         <div className="font-mono tabular-nums-strict">
           {totalCountOverride !== undefined ? (
             <>
-              已加载 <strong className="text-slate-200">{table.getFilteredRowModel().rows.length}</strong> /{" "}
+              已显示 <strong className="text-slate-200">{table.getFilteredRowModel().rows.length}</strong> /{" "}
               <strong className="text-slate-200">{totalCountOverride}</strong> 条记录
-              <span className="ml-2 text-sky-400/90">· Keyset Cursor + 动态虚拟行测量</span>
             </>
           ) : (
             <>
@@ -515,11 +523,11 @@ export function QuantDataTable<TData>({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-6 px-2.5 font-mono text-[11px]"
+                className="h-6 px-2.5 text-[11px]"
                 disabled={isFetchingNextPage}
                 onClick={onLoadMore}
               >
-                {isFetchingNextPage ? "游标拉取中..." : "加载下一页游标"}
+                {isFetchingNextPage ? "加载中..." : "加载更多"}
               </Button>
             )}
           </div>

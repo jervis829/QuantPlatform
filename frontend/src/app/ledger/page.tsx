@@ -390,7 +390,7 @@ function UnifiedLedgerInner() {
       {
         id: "cid",
         accessorKey: "client_order_id",
-        header: "client_order_id",
+        header: "订单号",
         meta: { mono: true },
         cell: ({ row }) => (
           <span className="text-[11px] text-slate-400">
@@ -431,11 +431,9 @@ function UnifiedLedgerInner() {
     <div className="space-y-5 pb-12">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-white">
-            三环境统一交易账本 (/ledger · 红线 5)
-          </h1>
+          <h1 className="text-lg font-semibold text-white">订单与成交记录</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            回测、影子与实盘共用同一套表结构；点击任意订单左侧展开箭头即可查看逐笔成交 Fills 与触发信号链路。
+            集中查看历史回测、模拟盘与实盘的全部买卖委托与成交明细；点击任意订单左侧展开箭头可查看逐笔成交与触发原因。
           </p>
         </div>
 
@@ -446,56 +444,56 @@ function UnifiedLedgerInner() {
             onClick={() => setShowAuxTables((v) => !v)}
           >
             <Database className="h-3.5 w-3.5 text-sky-400" />
-            <span>{showAuxTables ? "收起持仓/资金费子表" : "查询持仓/余额/资金费子表"}</span>
+            <span>{showAuxTables ? "收起持仓与资金明细" : "查看持仓 / 余额 / 资金费"}</span>
           </Button>
           <Button size="sm" variant="outline" onClick={handleExportOrdersCsv}>
             <Download className="h-3.5 w-3.5" />
-            <span>导出当前筛选 CSV</span>
+            <span>导出 CSV</span>
           </Button>
         </div>
       </div>
 
-      {/* Multi-Dimensional Combined Filter Bar (Env + Strategy + Symbol + Time + Status + ID) */}
+      {/* Clean Filter Bar */}
       <section className="rounded-lg border border-border bg-card p-3.5 space-y-3">
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 lg:grid-cols-7 text-xs">
           <div className="space-y-1">
-            <label className="text-slate-400">运行环境 (env)</label>
+            <label className="text-slate-400">运行类型</label>
             <select
               value={envFilter}
               onChange={(e) => {
                 setEnvFilter(e.target.value);
                 syncFiltersToUrl({ env: e.target.value });
               }}
-              className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
+              className="h-8 w-full rounded border border-input bg-slate-950 px-2 text-white"
             >
-              <option value="">全部环境</option>
-              <option value="live">LIVE (实盘)</option>
-              <option value="shadow">SHADOW (影子)</option>
-              <option value="backtest">BACKTEST (回测)</option>
+              <option value="">全部类型</option>
+              <option value="live">实盘交易</option>
+              <option value="shadow">模拟盘</option>
+              <option value="backtest">历史回测</option>
             </select>
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">策略 (strategy_id)</label>
+            <label className="text-slate-400">选择策略</label>
             <select
               value={strategyFilter}
               onChange={(e) => {
                 setStrategyFilter(e.target.value);
                 syncFiltersToUrl({ strategyId: e.target.value });
               }}
-              className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
+              className="h-8 w-full rounded border border-input bg-slate-950 px-2 text-white"
             >
               <option value="">全部策略</option>
               {(strategiesQuery.data ?? []).map((s) => (
                 <option key={s.strategy_id} value={s.strategy_id}>
-                  {s.strategy_id}
+                  {s.name}
                 </option>
               ))}
             </select>
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">交易对 (symbol)</label>
+            <label className="text-slate-400">交易品种</label>
             <select
               value={symbolFilter}
               onChange={(e) => {
@@ -504,7 +502,7 @@ function UnifiedLedgerInner() {
               }}
               className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
             >
-              <option value="">全部交易对</option>
+              <option value="">全部品种</option>
               {(specsQuery.data ?? []).map((sp) => (
                 <option key={`${sp.exchange}_${sp.symbol}`} value={sp.symbol}>
                   {sp.symbol}
@@ -514,26 +512,26 @@ function UnifiedLedgerInner() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">订单状态 (status)</label>
+            <label className="text-slate-400">订单状态</label>
             <select
               value={statusFilter}
               onChange={(e) => {
                 setStatusFilter(e.target.value);
                 syncFiltersToUrl({ status: e.target.value });
               }}
-              className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
+              className="h-8 w-full rounded border border-input bg-slate-950 px-2 text-white"
             >
               <option value="">全部状态</option>
-              <option value="FILLED">FILLED (完全成交)</option>
-              <option value="NEW">NEW (挂单中)</option>
-              <option value="PARTIALLY_FILLED">PARTIALLY_FILLED</option>
-              <option value="CANCELED">CANCELED (已撤)</option>
-              <option value="REJECTED">REJECTED (已拒单)</option>
+              <option value="FILLED">已成交</option>
+              <option value="NEW">挂单中</option>
+              <option value="PARTIALLY_FILLED">部分成交</option>
+              <option value="CANCELED">已撤单</option>
+              <option value="REJECTED">已拒单</option>
             </select>
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">起始日期 (UTC)</label>
+            <label className="text-slate-400">开始日期</label>
             <input
               type="date"
               value={startDateStr}
@@ -543,7 +541,7 @@ function UnifiedLedgerInner() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">截止日期 (UTC)</label>
+            <label className="text-slate-400">结束日期</label>
             <input
               type="date"
               value={endDateStr}
@@ -553,7 +551,7 @@ function UnifiedLedgerInner() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-slate-400">单号 / Run ID</label>
+            <label className="text-slate-400">搜索订单号</label>
             <div className="flex gap-1">
               <input
                 type="text"
@@ -570,7 +568,7 @@ function UnifiedLedgerInner() {
                     syncFiltersToUrl({ q: v, runId: "" });
                   }
                 }}
-                placeholder="client_order_id / run_id"
+                placeholder="输入单号搜索..."
                 className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
               />
               <Button
@@ -578,7 +576,7 @@ function UnifiedLedgerInner() {
                 size="icon"
                 variant="outline"
                 onClick={handleResetFilters}
-                title="清空全部组合筛选"
+                title="清空筛选条件"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -590,17 +588,17 @@ function UnifiedLedgerInner() {
       {/* First-Glance Summary Strip */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiMetricCard
-          label="筛选委托单总数"
-          timeWindow="组合条件聚合"
-          benchmarkLabel={`完全成交 ${sum?.filled_count ?? 0} · 拒单 ${sum?.rejected_count ?? 0}`}
+          label="订单总数"
+          timeWindow="当前筛选范围"
+          benchmarkLabel={`已成交 ${sum?.filled_count ?? 0} · 拒单 ${sum?.rejected_count ?? 0}`}
         >
           <span className="font-mono">{sum?.order_count ?? 0}</span>
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="累计成交名义金额"
-          timeWindow="Quote Notional"
-          benchmarkLabel="严格 Decimal 累加"
+          label="总成交金额"
+          timeWindow="累计成交额"
+          benchmarkLabel="USDT 计价"
         >
           <NumericDisplay
             value={sum?.total_notional_usdt ?? "0"}
@@ -609,9 +607,9 @@ function UnifiedLedgerInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="累计手续费支出"
-          timeWindow="Maker + Taker"
-          benchmarkLabel="账本实收实付"
+          label="累计手续费"
+          timeWindow="交易成本"
+          benchmarkLabel="实收手续费合计"
         >
           <span className="font-mono text-amber-300">
             {formatCurrency(sum?.total_fee_usdt ?? "0")}
@@ -619,9 +617,9 @@ function UnifiedLedgerInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="累计已实现净盈亏"
-          timeWindow="筛选订单集"
-          benchmarkLabel="极性配色联动"
+          label="累计净盈亏"
+          timeWindow="已平仓盈亏"
+          benchmarkLabel="当前筛选订单合计"
         >
           <NumericDisplay
             value={sum?.realized_pnl_usdt ?? "0"}
@@ -632,47 +630,82 @@ function UnifiedLedgerInner() {
         </KpiMetricCard>
       </div>
 
-      {/* Optional Auxiliary Unified Ledger Sub-Tables (Positions / Funding / Balances / Equity) */}
+      {/* Optional Auxiliary Unified Ledger Sub-Tables (Structured Table, Never Raw JSON!) */}
       {showAuxTables && (
         <section className="rounded-lg border border-sky-500/35 bg-slate-900/60 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-semibold text-white">
-              统一账本其余子表直查（需输入上方或下方指定 Run ID）
+              账户持仓、余额与资金费快照查询
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
                 value={runIdFilter}
                 onChange={(e) => setRunIdFilter(e.target.value)}
-                placeholder="输入指定 run_id 查询持仓/资金费快照..."
-                className="h-7 w-64 rounded border border-input bg-slate-950 px-2.5 font-mono text-xs text-white"
+                placeholder="粘贴运行编号 (run_...) 查询..."
+                className="h-7 w-60 rounded border border-input bg-slate-950 px-2.5 font-mono text-xs text-white"
               />
-              {["positions", "funding_payments", "balance_snapshots", "equity_curve"].map(
-                (tbl) => (
-                  <button
-                    key={tbl}
-                    type="button"
-                    onClick={() => setAuxTableName(tbl)}
-                    className={`rounded px-2.5 py-1 font-mono text-[11px] ${
-                      auxTableName === tbl
-                        ? "bg-blue-600 text-white font-semibold"
-                        : "bg-slate-950 text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    {tbl}
-                  </button>
-                )
-              )}
+              {(
+                [
+                  ["positions", "持仓记录"],
+                  ["balance_snapshots", "账户余额"],
+                  ["funding_payments", "资金费收支"],
+                  ["equity_curve", "账户净值"],
+                ] as const
+              ).map(([tbl, lbl]) => (
+                <button
+                  key={tbl}
+                  type="button"
+                  onClick={() => setAuxTableName(tbl)}
+                  className={`rounded px-2.5 py-1 text-[11px] ${
+                    auxTableName === tbl
+                      ? "bg-blue-600 text-white font-semibold"
+                      : "bg-slate-950 text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
             </div>
           </div>
           {!runIdFilter ? (
             <div className="text-xs text-slate-400">
-              请输入任一 `run_id`（可从下方订单展开区复制）查看该运行的 `{auxTableName}` 统一表快照。
+              请在右侧输入框填入某次运行的编号（可点击下方任意订单展开复制），查看对应的持仓、余额或资金费明细。
+            </div>
+          ) : (auxLedgerQuery.data?.items ?? []).length === 0 ? (
+            <div className="rounded bg-slate-950 p-3 text-xs text-slate-400">
+              该运行下暂无此类记录。
             </div>
           ) : (
-            <pre className="max-h-56 overflow-auto rounded bg-slate-950 p-3 font-mono text-[11px] text-slate-200">
-              {JSON.stringify(auxLedgerQuery.data?.items ?? [], null, 2)}
-            </pre>
+            <div className="max-h-60 overflow-auto rounded border border-border bg-slate-950">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-slate-900 text-[11px] text-slate-400">
+                  <tr>
+                    {Object.keys(
+                      (auxLedgerQuery.data?.items?.[0] ?? {}) as Record<string, unknown>
+                    ).map((colKey) => (
+                      <th key={colKey} className="px-3 py-2 font-medium">
+                        {colKey}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70 font-mono text-[11px] text-slate-200">
+                  {(auxLedgerQuery.data?.items ?? []).map((item, idx) => {
+                    const rec = item as Record<string, unknown>;
+                    return (
+                      <tr key={idx} className="hover:bg-slate-900/50">
+                        {Object.values(rec).map((val, cIdx) => (
+                          <td key={cIdx} className="px-3 py-1.5 whitespace-nowrap">
+                            {val === null || val === undefined ? "—" : String(val)}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       )}

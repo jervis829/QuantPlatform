@@ -59,15 +59,15 @@ export function GlobalStatusBar() {
           <Activity className="h-3.5 w-3.5 text-sky-400 shrink-0" />
           <span className="text-slate-400 hidden xl:inline">运行中:</span>
           <span className="font-mono font-semibold text-rose-300">
-            LIVE {ov?.running_counts.live ?? 0}
+            实盘 {ov?.running_counts.live ?? 0}
           </span>
           <span className="text-slate-600">·</span>
           <span className="font-mono font-semibold text-amber-300">
-            SH {ov?.running_counts.shadow ?? 0}
+            模拟 {ov?.running_counts.shadow ?? 0}
           </span>
           <span className="text-slate-600">·</span>
           <span className="font-mono font-semibold text-blue-300">
-            BT {ov?.running_counts.backtest ?? 0}
+            回测 {ov?.running_counts.backtest ?? 0}
           </span>
         </Link>
 
@@ -125,7 +125,7 @@ export function GlobalStatusBar() {
           title="服务器与交易所时钟偏移 (超过 1000ms 自动阻断实盘发单)"
         >
           <Clock className="h-3.5 w-3.5 text-slate-400" />
-          <span>偏移 {skewMs >= 0 ? `+${skewMs}` : skewMs}ms</span>
+          <span>延迟 {skewMs >= 0 ? `+${skewMs}` : skewMs}ms</span>
         </Link>
 
         {/* Reconciliation Discrepancies */}
@@ -139,11 +139,10 @@ export function GlobalStatusBar() {
                 ? "border-rose-500/70 bg-rose-950/60 text-rose-200 font-semibold"
                 : "border-amber-500/60 bg-amber-950/50 text-amber-200 font-semibold"
           )}
-          title="点击下钻至三层对账差异看板"
+          title="点击查看账户持仓与资金对账结果"
         >
           <GitCompareArrows className="h-3.5 w-3.5" />
-          <span>对账差异:</span>
-          <span className="font-mono font-bold tabular-nums-strict">{reconCount}</span>
+          <span>{reconCount === 0 ? "账目一致" : `对账差异 ${reconCount}`}</span>
           {reconCount > 0 && ov && (
             <span className="font-mono text-[10px]">
               (${ov.reconciliation_summary.total_abs_drift_usdt})
@@ -161,10 +160,10 @@ export function GlobalStatusBar() {
               ? "border-amber-500/70 bg-amber-950/55 text-amber-200 font-semibold"
               : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700"
           )}
-          title="打开常驻告警与通知中心"
+          title="查看风控提醒与通知"
         >
           <Bell className="h-3.5 w-3.5" />
-          <span>未处理告警</span>
+          <span>消息提醒</span>
           <span
             className={cn(
               "rounded px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums-strict",
@@ -184,10 +183,10 @@ export function GlobalStatusBar() {
           type="button"
           onClick={() => setCommandPaletteOpen(true)}
           className="flex h-8 items-center gap-2 rounded border border-border bg-slate-900 px-2.5 text-xs text-slate-400 hover:border-slate-600 hover:text-slate-200"
-          title="全局搜索策略、运行记录、订单 (Cmd/Ctrl + K)"
+          title="快速搜索策略、回测记录、订单 (Cmd/Ctrl + K)"
         >
           <Search className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">跳转/搜索...</span>
+          <span className="hidden lg:inline">快速搜索...</span>
           <kbd className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
             ⌘K
           </kbd>
@@ -200,11 +199,12 @@ export function GlobalStatusBar() {
             variant="killSwitch"
             size="default"
             onClick={() => setKillSwitchModalOpen(true)}
+            title="紧急撤单并平掉实盘持仓 (Kill Switch)"
           >
             <ShieldAlert className="h-4 w-4" />
-            <span>KILL SWITCH</span>
+            <span>紧急全停</span>
             {ov?.kill_switch_active && (
-              <span className="ml-1 rounded bg-white/20 px-1 text-[9px]">已激活</span>
+              <span className="ml-1 rounded bg-white/20 px-1 text-[9px]">已停机</span>
             )}
           </Button>
         </div>

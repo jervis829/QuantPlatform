@@ -111,33 +111,49 @@ export interface CreateStrategyModalProps {
 export function CreateStrategyModal({
   open,
   onOpenChange,
-  defaultMode = "python",
+  defaultMode = "nl",
 }: CreateStrategyModalProps) {
   const router = useRouter();
   const { apiKey } = usePreferences();
   const queryClient = useQueryClient();
 
   const [mode, setMode] = useState<"python" | "nl">(defaultMode);
-  const [strategyId, setStrategyId] = useState("strat_btc_sma");
-  const [name, setName] = useState("BTC USDT-M SMA Crossover");
-  const [description, setDescription] = useState("双均线趋势跟踪策略（只输出声明式 Signal）");
+  const [name, setName] = useState("BTC 双均线趋势策略");
+  const [description, setDescription] = useState("均线金叉买入，死叉平仓");
+  const [customId, setCustomId] = useState("");
+  const [showAdvancedId, setShowAdvancedId] = useState(false);
   const [code, setCode] = useState(DEFAULT_PYTHON_TEMPLATE);
   const [prompt, setPrompt] = useState(
-    "当 BTC/USDT:USDT 5周期均线上穿 12周期均线时买入 0.05 BTC，下穿时平仓"
+    "当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
   );
+
+  React.useEffect(() => {
+    if (open) {
+      setMode(defaultMode);
+    }
+  }, [defaultMode, open]);
+
+  const resolvedStrategyId =
+    customId.trim() ||
+    `strat_${
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "custom"
+    }_${Math.floor((Date.now() / 1000) % 100000)}`;
 
   const createMutation = useMutation({
     mutationFn: async () => {
       if (mode === "python") {
         return quantApi.uploadStrategy(apiKey, {
-          strategy_id: strategyId.trim(),
+          strategy_id: resolvedStrategyId,
           name: name.trim(),
           description: description.trim(),
           code,
         });
       }
       return quantApi.generateNLStrategy(apiKey, {
-        strategy_id: strategyId.trim(),
+        strategy_id: resolvedStrategyId,
         name: name.trim(),
         description: description.trim(),
         prompt,
@@ -155,42 +171,39 @@ export function CreateStrategyModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>注册新策略或提交新版本（AST + 隔离沙箱双重校验）</DialogTitle>
+          <DialogTitle>新建交易策略</DialogTitle>
           <DialogDescription>
-            Python 上传与自然语言生成共享完全一致的受限 AST 静态检查与无网络隔离沙箱；入库后默认 PENDING 待人工审批。
+            支持直接用中文描述买卖规则自动生成策略，也支持直接粘贴 Python 策略代码。
           </DialogDescription>
         </DialogHeader>
 
-        {/* Mode Switcher */}
+        {/* Mode Switcher — Plain Language, NL first */}
         <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-slate-950 p-1">
           <button
             type="button"
-            onClick={() => setMode("python")}
-            className={`flex items-center justify-center gap-2 rounded py-1.5 text-xs font-medium ${
-              mode === "python"
-                ? "bg-blue-600 text-white"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <Code2 className="h-3.5 w-3.5" />
-            <span>上传 Python 策略源码</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode("nl");
-              if (strategyId === "strat_btc_sma") setStrategyId("strat_btc_sma_nl");
-            }}
-            className={`flex items-center justify-center gap-2 rounded py-1.5 text-xs font-medium ${
+            onClick={() => setMode("nl")}
+            className={`flex items-center justify-center gap-2 rounded py-2 text-xs font-medium ${
               mode === "nl"
                 ? "bg-violet-600 text-white"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Sparkles className="h-3.5 w-3.5" />
-            <span>自然语言生成策略 (NL → LLM + 回测门禁)</span>
+            <span>一句话生成策略（新手推荐）</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("python")}
+            className={`flex items-center justify-center gap-2 rounded py-2 text-xs font-medium ${
+              mode === "python"
+                ? "bg-blue-600 text-white"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            <span>编写 Python 代码（进阶）</span>
           </button>
         </div>
 
@@ -198,80 +211,122 @@ export function CreateStrategyModal({
           <RunLoadingState
             title={
               mode === "python"
-                ? "正在执行 AST 静态白名单检查与隔离沙箱试运行..."
-                : "正在生成策略代码并执行隔离沙箱 + 自动历史回测门禁..."
+                ? "正在安全检查并保存您的策略代码..."
+                : "正在根据您的描述自动编写策略并执行回测验证..."
             }
-            currentStageLabel="校验禁止网络/文件/系统调用与前视偏差约束"
+            currentStageLabel="自动检查代码安全性与交易规则有效性"
             progressPct={65}
           />
         ) : (
           <div className="space-y-3 text-xs">
             {createMutation.isError && (
               <ActionableErrorState
-                title="策略校验或注册未通过"
+                title="策略保存未通过"
                 reasonCode={apiErr?.reasonCode ?? "STRATEGY_VALIDATION_FAILED"}
                 message={apiErr?.message ?? String(createMutation.error)}
-                remediation="请移除任何禁止导入（os/socket/requests/random/datetime.now）并确保继承 Strategy 基类。"
+                remediation="请检查买卖规则描述是否清晰，或检查代码语法是否正确。"
                 rawDetail={apiErr?.rawDetail}
               />
             )}
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <label className="text-slate-300 font-medium">策略唯一标识 (strategy_id) *</label>
-                <input
-                  type="text"
-                  value={strategyId}
-                  onChange={(e) => setStrategyId(e.target.value)}
-                  className="h-8 w-full rounded border border-input bg-slate-950 px-2.5 font-mono text-white"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-slate-300 font-medium">策略显示名称 *</label>
+                <label className="text-slate-200 font-medium">策略名称 *</label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  placeholder="例如：BTC 双均线趋势策略"
                   className="h-8 w-full rounded border border-input bg-slate-950 px-2.5 text-white"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-slate-300 font-medium">简短描述</label>
+                <label className="text-slate-300 font-medium">备注说明（选填）</label>
                 <input
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
+                  placeholder="简单记录策略思路"
                   className="h-8 w-full rounded border border-input bg-slate-950 px-2.5 text-white"
                 />
               </div>
             </div>
 
-            {mode === "python" ? (
-              <div className="space-y-1">
-                <label className="text-slate-300 font-medium">
-                  Python 策略源码（只允许输出声明式 Signal / TargetPosition）
-                </label>
+            {mode === "nl" ? (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-1">
+                  <label className="text-slate-200 font-medium">
+                    用一句话描述您的买卖规则 *
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="text-slate-400">快速填入示例:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setName("BTC 双均线趋势策略");
+                        setPrompt(
+                          "当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
+                        );
+                      }}
+                      className="rounded border border-violet-500/40 bg-violet-950/30 px-2 py-0.5 text-violet-200 hover:bg-violet-900/40"
+                    >
+                      双均线金叉买入
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setName("ETH RSI 超卖反弹策略");
+                        setPrompt(
+                          "当 ETH/USDT:USDT 7周期 RSI 低于 32 时买入 0.8 ETH，高于 68 时平仓"
+                        );
+                      }}
+                      className="rounded border border-violet-500/40 bg-violet-950/30 px-2 py-0.5 text-violet-200 hover:bg-violet-900/40"
+                    >
+                      RSI 超卖抄底
+                    </button>
+                  </div>
+                </div>
                 <textarea
-                  rows={12}
+                  rows={4}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="例如：当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
+                  className="w-full rounded border border-input bg-[#060912] p-3 text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <label className="text-slate-200 font-medium">Python 策略代码</label>
+                <textarea
+                  rows={11}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   spellCheck={false}
                   className="w-full rounded border border-input bg-[#060912] p-3 font-mono text-xs text-slate-100 focus:border-blue-500 focus:outline-none"
                 />
               </div>
-            ) : (
-              <div className="space-y-1">
-                <label className="text-slate-300 font-medium">
-                  自然语言策略逻辑描述（将自动执行 AST 检查 + 沙箱测试 + 回测门禁）
-                </label>
-                <textarea
-                  rows={5}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  className="w-full rounded border border-input bg-[#060912] p-3 text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
-                />
-              </div>
             )}
+
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedId((v) => !v)}
+                className="text-[11px] text-slate-400 hover:text-slate-200"
+              >
+                {showAdvancedId ? "▾ 收起高级选项" : "▸ 高级选项（自定义策略英文 ID，默认自动生成）"}
+              </button>
+              {showAdvancedId && (
+                <div className="mt-1.5 space-y-1">
+                  <input
+                    type="text"
+                    value={customId}
+                    onChange={(e) => setCustomId(e.target.value)}
+                    placeholder={`留空将自动使用: ${resolvedStrategyId}`}
+                    className="h-8 w-full rounded border border-input bg-slate-950 px-2.5 font-mono text-xs text-white"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -281,14 +336,10 @@ export function CreateStrategyModal({
           </Button>
           <Button
             variant="default"
-            disabled={
-              createMutation.isPending || !strategyId.trim() || !name.trim()
-            }
+            disabled={createMutation.isPending || !name.trim()}
             onClick={() => createMutation.mutate()}
           >
-            {mode === "python"
-              ? "通过 AST+沙箱校验并注册策略"
-              : "生成代码并执行沙箱+回测门禁"}
+            {mode === "nl" ? "立即生成策略" : "保存策略"}
           </Button>
         </DialogFooter>
       </DialogContent>

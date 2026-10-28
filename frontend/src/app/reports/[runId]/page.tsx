@@ -74,6 +74,7 @@ function BacktestReportInner() {
   const compareRunId = searchParams.get("compareRunId") || "";
   const [focusedTimeSec, setFocusedTimeSec] = useState<number | null>(null);
   const [attribTab, setAttribTab] = useState<"fills" | "trades" | "daily">("fills");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const reportQuery = useQuery({
     queryKey: ["backtest-report", runId, apiKey],
@@ -544,7 +545,7 @@ function BacktestReportInner() {
 
   return (
     <div className="space-y-5 pb-12">
-      {/* Top Header: Breadcrumb, Lineage, Version/Run Comparison Picker & Export */}
+      {/* Top Header: Clean Breadcrumb, Title, Run Comparison & Export */}
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -553,20 +554,15 @@ function BacktestReportInner() {
               className="inline-flex items-center gap-1 hover:text-white"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>返回策略详情 ({strategyId || "工作台"})</span>
+              <span>返回策略管理 ({strategyId || "我的策略"})</span>
             </Link>
             <span>·</span>
-            <span className="font-mono">版本 {versionId}</span>
-            <span>·</span>
-            <span className="font-mono">Dataset {String(lineage.dataset_version ?? "-")}</span>
+            <span className="font-mono">{versionId}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <EnvBadge env="backtest" />
-            <h1 className="text-lg font-bold text-white">回测绩效与弱点归因报告</h1>
-            <code className="rounded bg-slate-900 px-2 py-0.5 font-mono text-xs text-slate-300">
-              {runId}
-            </code>
+            <h1 className="text-lg font-bold text-white">历史回测报告与 K 线买卖点</h1>
           </div>
         </div>
 
@@ -574,18 +570,18 @@ function BacktestReportInner() {
           {/* Side-by-Side Comparison Picker */}
           <div className="flex items-center gap-1.5 rounded border border-border bg-slate-950 px-2.5 py-1 text-xs">
             <GitCompare className="h-3.5 w-3.5 text-sky-400" />
-            <span className="text-slate-400">并排对比:</span>
+            <span className="text-slate-400">对比其它回测:</span>
             <select
               value={compareRunId}
               onChange={(e) => setCompareParam(e.target.value)}
-              className="bg-transparent font-mono text-xs text-white focus:outline-none"
+              className="bg-transparent text-xs text-white focus:outline-none"
             >
-              <option value="">不对比（单次视图）</option>
+              <option value="">不对比</option>
               {(allBtRunsQuery.data ?? [])
                 .filter((r) => r.run_id !== runId)
                 .map((r) => (
                   <option key={r.run_id} value={r.run_id}>
-                    {r.strategy_version_id} · {r.run_id.slice(0, 14)}...
+                    {r.strategy_version_id} · {r.run_id.slice(0, 12)}...
                   </option>
                 ))}
             </select>
@@ -593,16 +589,16 @@ function BacktestReportInner() {
 
           <Button size="sm" variant="outline" onClick={handleExportTradesCsv}>
             <FileSpreadsheet className="h-3.5 w-3.5" />
-            <span>导出逐笔 CSV</span>
+            <span>导出交易明细</span>
           </Button>
           <Button size="sm" variant="outline" onClick={handleExportReportJson}>
             <Download className="h-3.5 w-3.5" />
-            <span>导出报告 JSON</span>
+            <span>导出完整报告</span>
           </Button>
         </div>
       </div>
 
-      {/* Automated Strategy Usability & Weakness Diagnosis Banner */}
+      {/* Automated Strategy Diagnosis Banner */}
       <div
         className={`rounded-lg border p-3.5 text-xs ${
           weaknesses.length === 0 && cumRet > 0
@@ -614,12 +610,12 @@ function BacktestReportInner() {
           {weaknesses.length === 0 && cumRet > 0 ? (
             <>
               <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-              <span>综合诊断：样本内表现稳健，建议结合下方参数敏感性热力图与 Walk-Forward 样本外结果确认泛化能力</span>
+              <span>回测结论：当前区间整体盈利且风控指标稳健，建议结合下方 K 线买卖点复盘后再上模拟盘。</span>
             </>
           ) : (
             <>
               <AlertTriangle className="h-4 w-4 text-amber-400" />
-              <span>策略弱点与风险诊断（实盘前请重点审阅以下 {weaknesses.length || 1} 项）：</span>
+              <span>风险提示（上模拟盘或实盘前请注意以下 {weaknesses.length || 1} 点）：</span>
             </>
           )}
         </div>
@@ -642,12 +638,12 @@ function BacktestReportInner() {
         />
       )}
 
-      {/* First-Glance KPI Cards (5 Cards with Benchmark/Window + Click-to-Drilldown!) */}
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      {/* First-Glance KPI Cards (5 Clean Cards) */}
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiMetricCard
-          label="累计收益率 (点击下钻月度矩阵)"
+          label="总收益率"
           timeWindow={windowLabel}
-          benchmarkLabel={`基准超额: ${formatPercent(Number(bench.excess_return ?? 0), {
+          benchmarkLabel={`跑赢基准: ${formatPercent(Number(bench.excess_return ?? 0), {
             inputIsRatio: true,
             showPlusSign: true,
           })}`}
@@ -659,7 +655,10 @@ function BacktestReportInner() {
               showPlusSign
             />
           }
-          onClick={() => scrollToSection("monthly-matrix-section")}
+          onClick={() => {
+            setShowAdvanced(true);
+            setTimeout(() => scrollToSection("monthly-matrix-section"), 60);
+          }}
         >
           <NumericDisplay
             value={cumRet}
@@ -670,9 +669,9 @@ function BacktestReportInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="最大回撤 (点击定位谷值K线)"
+          label="最大回撤"
           timeWindow={`持续 ${formatDurationMs(Number(ddDetails.duration_ms ?? 0))}`}
-          benchmarkLabel={`Calmar: ${Number(summary.calmar ?? 0).toFixed(2)}`}
+          benchmarkLabel="点击定位最大回撤 K 线"
           alertTone={Math.abs(maxDd) > 0.15 ? "warning" : "none"}
           onClick={() => {
             const troughMs = Number(ddDetails.trough_ts_ms ?? 0);
@@ -690,11 +689,9 @@ function BacktestReportInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="夏普比率 (点击下钻按日归因)"
-          timeWindow="365D 年化"
-          benchmarkLabel={`Sortino ${Number(summary.sortino ?? 0).toFixed(2)} · IR ${Number(
-            bench.information_ratio ?? 0
-          ).toFixed(2)}`}
+          label="夏普比率"
+          timeWindow="风险收益比"
+          benchmarkLabel={`索提诺 ${Number(summary.sortino ?? 0).toFixed(2)}`}
           onClick={() => {
             setAttribTab("daily");
             scrollToSection("attribution-section");
@@ -704,11 +701,9 @@ function BacktestReportInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="胜率 / 盈亏比 (点击下钻逐笔表)"
-          timeWindow={`共 ${closedCount} 笔闭合交易`}
-          benchmarkLabel={`盈亏比 ${Number(tradeMetrics.payoff_ratio ?? 0).toFixed(2)} · 期望 ${formatCurrency(
-            Number(tradeMetrics.expectancy ?? 0)
-          )}`}
+          label="交易胜率"
+          timeWindow={`共 ${closedCount} 笔开平仓`}
+          benchmarkLabel={`盈亏比 ${Number(tradeMetrics.payoff_ratio ?? 0).toFixed(2)}`}
           onClick={() => {
             setAttribTab("trades");
             scrollToSection("attribution-section");
@@ -721,11 +716,14 @@ function BacktestReportInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="手续费侵蚀毛利占比 (点击下钻)"
-          timeWindow={`换手率 ${Number(summary.turnover_rate ?? 0).toFixed(2)}x`}
-          benchmarkLabel={`总手续费 ${formatCurrency(String(costs.total_fees ?? "0"))}`}
+          label="手续费占比"
+          timeWindow={`共付 ${formatCurrency(String(costs.total_fees ?? "0"))}`}
+          benchmarkLabel="占毛利比例（点击看拆解）"
           alertTone={feeRatio > 0.35 ? "warning" : "none"}
-          onClick={() => scrollToSection("cost-breakdown-section")}
+          onClick={() => {
+            setShowAdvanced(true);
+            setTimeout(() => scrollToSection("cost-breakdown-section"), 60);
+          }}
         >
           <span className="font-mono text-amber-300">
             {(feeRatio * 100).toFixed(1)}%
@@ -733,11 +731,11 @@ function BacktestReportInner() {
         </KpiMetricCard>
       </section>
 
-      {/* Main Chart Container: K-Line + Buy/Sell Markers + Volume + Equity vs Benchmark + Drawdown */}
+      {/* Main Chart Container: K-Line + Buy/Sell Markers + Volume + Equity + Drawdown */}
       <section id="chart-section">
         {chartQuery.data ? (
           <FinancialChartContainer
-            title="专业 K 线复盘工作站 · 全量买卖执行点 · 净值与水下回撤"
+            title="K 线买卖点复盘"
             symbol={chartQuery.data.symbol}
             symbolSpec={chartQuery.data.symbol_spec}
             bars={chartQuery.data.bars}
@@ -750,111 +748,7 @@ function BacktestReportInner() {
         ) : null}
       </section>
 
-      {/* Monthly Return Matrix */}
-      <section id="monthly-matrix-section">
-        <MonthlyReturnMatrix matrix={monthlyMatrix} />
-      </section>
-
-      {/* Cost Erosion & Holding Duration / Exposure Breakdown */}
-      <section
-        id="cost-breakdown-section"
-        className="grid grid-cols-1 gap-4 lg:grid-cols-2"
-      >
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <h3 className="text-xs font-semibold text-white">
-            交易摩擦成本与资金费率占比拆解 (Cost & Funding Breakdown)
-          </h3>
-          <div className="grid grid-cols-2 gap-3 font-mono text-xs sm:grid-cols-3">
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">累计交易手续费</div>
-              <div className="mt-1 font-bold text-amber-300">
-                {formatCurrency(String(costs.total_fees ?? "0"))}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                占初始本金{" "}
-                {formatPercent(Number(costs.fee_to_initial_equity_ratio ?? 0), {
-                  inputIsRatio: true,
-                })}
-              </div>
-            </div>
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">累计资金费净收支</div>
-              <div className="mt-1 font-bold">
-                <NumericDisplay
-                  value={String(costs.total_funding ?? "0")}
-                  mode="currency"
-                  coloredBySign
-                  showPlusSign
-                />
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                占毛利{" "}
-                {formatPercent(Number(costs.funding_to_gross_pnl_ratio ?? 0), {
-                  inputIsRatio: true,
-                })}
-              </div>
-            </div>
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">杠杆借币利息</div>
-              <div className="mt-1 font-bold text-slate-200">
-                {formatCurrency(String(costs.total_interest ?? "0"))}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">按真实计息周期累计</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <h3 className="text-xs font-semibold text-white">
-            持仓周期分布与多空敞口统计 (Holding Duration & Exposure)
-          </h3>
-          <div className="grid grid-cols-2 gap-3 font-mono text-xs sm:grid-cols-4">
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">中位持仓时长</div>
-              <div className="mt-1 font-bold text-white">
-                {formatDurationMs(Number(holdDist.median_ms ?? 0))}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                P25 {formatDurationMs(Number(holdDist.p25_ms ?? 0))}
-              </div>
-            </div>
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">最长持仓时长</div>
-              <div className="mt-1 font-bold text-white">
-                {formatDurationMs(Number(holdDist.max_ms ?? 0))}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                P75 {formatDurationMs(Number(holdDist.p75_ms ?? 0))}
-              </div>
-            </div>
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">多头暴露占比</div>
-              <div className="mt-1 font-bold text-emerald-300">
-                {formatPercent(Number(exposure.long_time_ratio ?? 0), {
-                  inputIsRatio: true,
-                })}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                空头{" "}
-                {formatPercent(Number(exposure.short_time_ratio ?? 0), {
-                  inputIsRatio: true,
-                })}
-              </div>
-            </div>
-            <div className="rounded bg-slate-900 p-2.5">
-              <div className="text-[11px] font-sans text-slate-400">峰值总敞口</div>
-              <div className="mt-1 font-bold text-white">
-                {formatCurrency(Number(exposure.max_gross_exposure ?? 0))}
-              </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
-                集中度 HHI {Number(exposure.position_concentration_hhi ?? 0).toFixed(2)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Per-Fill Buy/Sell Points, Round-Trip Trades & Daily Attribution Tables */}
+      {/* Per-Fill Buy/Sell Points, Round-Trip Trades & Daily Attribution Tables (Immediately below K-line!) */}
       <section id="attribution-section" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="inline-flex flex-wrap rounded-md border border-border bg-slate-950 p-1">
@@ -867,7 +761,7 @@ function BacktestReportInner() {
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              全部买卖点执行明细 ({markerRows.length}) · 点击任意行精准定位 K 线箭头
+              买卖点明细 ({markerRows.length}) · 点击定位 K 线
             </button>
             <button
               type="button"
@@ -878,7 +772,7 @@ function BacktestReportInner() {
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              逐笔闭合交易归因 ({tradeRows.length})
+              每笔开平仓盈亏 ({tradeRows.length})
             </button>
             <button
               type="button"
@@ -889,7 +783,7 @@ function BacktestReportInner() {
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              按日净值与费用归因 ({dailyRows.length})
+              每日收益统计 ({dailyRows.length})
             </button>
           </div>
         </div>
@@ -898,7 +792,7 @@ function BacktestReportInner() {
           markerRows.length === 0 ? (
             <EmptyState
               title="本次回测未产生买卖成交点"
-              description="当前策略参数在回测区间内未触发开平仓信号。"
+              description="当前策略参数在回测区间内未触发买入或卖出信号。"
             />
           ) : (
             <QuantDataTable
@@ -915,8 +809,8 @@ function BacktestReportInner() {
         ) : attribTab === "trades" ? (
           tradeRows.length === 0 ? (
             <EmptyState
-              title="本次回测无完整闭合交易对 (Round-Trip)"
-              description="可能策略在当前回测区间仅开仓未平仓，或信号条件尚未触发。"
+              title="暂无已平仓的完整交易对"
+              description="可能策略当前仅开仓尚未平仓，可切到左侧「买卖点明细」查看单边买点。"
             />
           ) : (
             <QuantDataTable
@@ -940,12 +834,142 @@ function BacktestReportInner() {
         )}
       </section>
 
-      {/* Parameter Sensitivity Heatmap & Walk-Forward Analysis */}
-      <section id="robustness-section" className="space-y-2.5">
-        <h2 className="text-sm font-semibold text-slate-200">
-          样本外泛化与参数稳健性检验（参数敏感性热力图 · Walk-Forward 滚动验证）
-        </h2>
-        <ResearchRobustnessPanels runId={runId} versionParams={versionParams} />
+      {/* Progressive Disclosure: Advanced Quant Research Analysis */}
+      <section className="rounded-lg border border-border bg-card/50 p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              高级深度分析（月度收益表 · 成本与持仓拆解 · 参数敏感性检验）
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              想进一步检查策略是否过拟合、手续费损耗分布或各月份稳定性？展开查看完整投研分析。
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant={showAdvanced ? "outline" : "secondary"}
+            size="sm"
+            onClick={() => setShowAdvanced((v) => !v)}
+          >
+            {showAdvanced ? "收起高级分析 ▴" : "展开高级深度分析 ▾"}
+          </Button>
+        </div>
+
+        {showAdvanced && (
+          <div className="space-y-5 border-t border-border pt-4">
+            {/* Monthly Return Matrix */}
+            <div id="monthly-matrix-section">
+              <MonthlyReturnMatrix matrix={monthlyMatrix} />
+            </div>
+
+            {/* Cost Erosion & Holding Duration / Exposure Breakdown */}
+            <div
+              id="cost-breakdown-section"
+              className="grid grid-cols-1 gap-4 lg:grid-cols-2"
+            >
+              <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+                <h3 className="text-xs font-semibold text-white">
+                  交易成本与资金费拆解
+                </h3>
+                <div className="grid grid-cols-2 gap-3 font-mono text-xs sm:grid-cols-3">
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">累计手续费</div>
+                    <div className="mt-1 font-bold text-amber-300">
+                      {formatCurrency(String(costs.total_fees ?? "0"))}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      占本金{" "}
+                      {formatPercent(Number(costs.fee_to_initial_equity_ratio ?? 0), {
+                        inputIsRatio: true,
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">资金费净收支</div>
+                    <div className="mt-1 font-bold">
+                      <NumericDisplay
+                        value={String(costs.total_funding ?? "0")}
+                        mode="currency"
+                        coloredBySign
+                        showPlusSign
+                      />
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      占毛利{" "}
+                      {formatPercent(Number(costs.funding_to_gross_pnl_ratio ?? 0), {
+                        inputIsRatio: true,
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">借币利息</div>
+                    <div className="mt-1 font-bold text-slate-200">
+                      {formatCurrency(String(costs.total_interest ?? "0"))}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">按计息周期累计</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+                <h3 className="text-xs font-semibold text-white">
+                  持仓时长与多空仓位占比
+                </h3>
+                <div className="grid grid-cols-2 gap-3 font-mono text-xs sm:grid-cols-4">
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">中位持仓时长</div>
+                    <div className="mt-1 font-bold text-white">
+                      {formatDurationMs(Number(holdDist.median_ms ?? 0))}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      P25 {formatDurationMs(Number(holdDist.p25_ms ?? 0))}
+                    </div>
+                  </div>
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">最长持仓时长</div>
+                    <div className="mt-1 font-bold text-white">
+                      {formatDurationMs(Number(holdDist.max_ms ?? 0))}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      P75 {formatDurationMs(Number(holdDist.p75_ms ?? 0))}
+                    </div>
+                  </div>
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">做多时间占比</div>
+                    <div className="mt-1 font-bold text-emerald-300">
+                      {formatPercent(Number(exposure.long_time_ratio ?? 0), {
+                        inputIsRatio: true,
+                      })}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      做空{" "}
+                      {formatPercent(Number(exposure.short_time_ratio ?? 0), {
+                        inputIsRatio: true,
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded bg-slate-900 p-2.5">
+                    <div className="text-[11px] font-sans text-slate-400">最大持仓金额</div>
+                    <div className="mt-1 font-bold text-white">
+                      {formatCurrency(Number(exposure.max_gross_exposure ?? 0))}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      集中度 {Number(exposure.position_concentration_hhi ?? 0).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Parameter Sensitivity Heatmap & Walk-Forward Analysis */}
+            <div id="robustness-section" className="space-y-2.5">
+              <h3 className="text-xs font-semibold text-slate-200">
+                参数敏感性热力图与 Walk-Forward 滚动验证（检验策略是否过拟合）
+              </h3>
+              <ResearchRobustnessPanels runId={runId} versionParams={versionParams} />
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

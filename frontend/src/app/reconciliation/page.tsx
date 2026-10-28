@@ -50,18 +50,18 @@ interface ReconReportSummaryItem {
 const TIER_TABS: Array<{ id: ReconTierKey; title: string; subtitle: string }> = [
   {
     id: "exchange_vs_local",
-    title: "Tier 1 · 系统 vs 交易所",
-    subtitle: "核对实盘持仓、挂单、逐笔成交与资金费结算权威一致性",
+    title: "① 核对实盘与交易所",
+    subtitle: "检查本地记录的持仓、挂单、成交与资金费是否和交易所真实账目完全一致",
   },
   {
     id: "shadow_vs_live",
-    title: "Tier 2 · 影子 vs 实盘",
-    subtitle: "核对同版本策略在模拟撮合与真实交易所间的滑点与成交率偏差",
+    title: "② 对比模拟盘与实盘",
+    subtitle: "查看同一策略在模拟盘与真实交易之间的滑点与成交价差异",
   },
   {
     id: "backtest_vs_shadow",
-    title: "Tier 3 · 回测 vs 影子 (6维归因)",
-    subtitle: "拆解撮合假设、盘口排队、网络延迟、手续费与资金费差异来源",
+    title: "③ 对比回测与模拟盘",
+    subtitle: "分析历史回测收益与实时模拟盘之间出现偏差的具体原因",
   },
 ];
 
@@ -294,14 +294,12 @@ function ReconciliationBoardInner() {
 
   return (
     <div className="space-y-5 pb-12">
-      {/* Header + 1-Click Fault Drill Verification Button */}
+      {/* Header + Optional Drill Button */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-white">
-            三层对账与一致性归因看板 (/reconciliation)
-          </h1>
+          <h1 className="text-lg font-semibold text-white">账户对账</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            快速回答「哪里不一致、严重程度如何、影响多少钱」；点击任意差异行可展开下钻到具体 order_id / fill_id / 毫秒时间戳并直跳账本。
+            一键核对持仓、余额与成交明细是否账实相符。如有差异，直接列出差在哪笔单、影响多少金额。
           </p>
         </div>
 
@@ -309,16 +307,16 @@ function ReconciliationBoardInner() {
           {canOperate && (
             <Button
               size="sm"
-              variant="shadow"
+              variant="outline"
               disabled={faultDrillMutation.isPending}
               onClick={() => faultDrillMutation.mutate()}
-              title="在后端数据库真实执行一次包含仓位不平、漏成交与资金费差异的 Tier-1 对账故障演练"
+              title="模拟一次仓位不平、漏成交与资金费差异的对账测试"
             >
-              <FlaskConical className="h-3.5 w-3.5" />
+              <FlaskConical className="h-3.5 w-3.5 text-amber-400" />
               <span>
                 {faultDrillMutation.isPending
-                  ? "正在注入差异并执行对账..."
-                  : "运行差异故障演练 (仓位不平 + 漏成交 + 资金费差异)"}
+                  ? "正在执行模拟测试..."
+                  : "模拟账目差异演练"}
               </span>
             </Button>
           )}
@@ -330,7 +328,7 @@ function ReconciliationBoardInner() {
               </Button>
               <Button size="sm" variant="outline" onClick={() => void handleExport("json")}>
                 <Download className="h-3.5 w-3.5" />
-                <span>导出 JSON</span>
+                <span>导出报告</span>
               </Button>
             </>
           )}
@@ -373,12 +371,12 @@ function ReconciliationBoardInner() {
             {activeTier === "exchange_vs_local" && (
               <>
                 <div className="space-y-1">
-                  <label className="text-slate-400">实盘 Run ID (live_run_id)</label>
+                  <label className="text-slate-400">实盘运行编号（选填）</label>
                   <input
                     type="text"
                     value={liveRunId}
                     onChange={(e) => setLiveRunId(e.target.value)}
-                    placeholder="默认对齐最近活跃实盘实例"
+                    placeholder="留空则核对最近一次实盘"
                     className="h-8 w-60 rounded border border-input bg-slate-950 px-2.5 font-mono text-white"
                   />
                 </div>
@@ -389,7 +387,7 @@ function ReconciliationBoardInner() {
                     onChange={(e) => setAutoHeal(e.target.checked)}
                     className="accent-emerald-500"
                   />
-                  <span>以交易所权威状态自动自愈修复本地账本 (auto_heal)</span>
+                  <span>发现差异时按交易所真实账目自动修正本地记录</span>
                 </label>
               </>
             )}
@@ -397,7 +395,7 @@ function ReconciliationBoardInner() {
             {activeTier === "shadow_vs_live" && (
               <>
                 <div className="space-y-1">
-                  <label className="text-slate-400">影子 Run ID (shadow_run_id)</label>
+                  <label className="text-slate-400">模拟盘运行编号</label>
                   <input
                     type="text"
                     value={shadowRunId}
@@ -406,7 +404,7 @@ function ReconciliationBoardInner() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-slate-400">实盘 Run ID (live_run_id)</label>
+                  <label className="text-slate-400">实盘运行编号</label>
                   <input
                     type="text"
                     value={liveRunId}
@@ -420,7 +418,7 @@ function ReconciliationBoardInner() {
             {activeTier === "backtest_vs_shadow" && (
               <>
                 <div className="space-y-1">
-                  <label className="text-slate-400">回测 Run ID (backtest_run_id)</label>
+                  <label className="text-slate-400">历史回测运行编号</label>
                   <input
                     type="text"
                     value={backtestRunId}

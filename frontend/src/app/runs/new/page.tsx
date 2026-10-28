@@ -240,11 +240,9 @@ function LaunchRunCenterInner() {
   return (
     <div className="space-y-5 pb-12">
       <div>
-        <h1 className="text-lg font-semibold text-white">
-          分级运行启动中心 (/runs/new · 三环境防呆隔离)
-        </h1>
+        <h1 className="text-lg font-semibold text-white">启动运行</h1>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          回测（单屏安全快速确认）、影子（门禁与隔离确认）、实盘（三步账户/保证金风控预检/确认词解锁）按资金风险等级严格差异化设计。
+          选择策略后，可运行「历史回测」看过去表现、「模拟盘」用实时行情练兵，或经过三步风控核验后开启「实盘交易」。
         </p>
       </div>
 
@@ -264,15 +262,15 @@ function LaunchRunCenterInner() {
           >
             <div className="flex items-center justify-between">
               <EnvBadge env="backtest" />
-              <span className="font-mono text-[10px] text-blue-300">
-                安全级 · 单屏直发
+              <span className="text-[11px] text-blue-300">
+                零资金风险 · 秒出报告
               </span>
             </div>
             <div className="mt-2 text-xs font-semibold text-white">
-              历史回测 (BacktestRunner)
+              ① 历史回测（用过去行情验证）
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
-              离线历史数据回放与归因，不触碰任何实时通道或账户资金。
+              用历史 K 线回放策略，立即查看收益率、最大回撤与每笔买卖点，不花一分真钱。
             </p>
           </button>
 
@@ -289,15 +287,15 @@ function LaunchRunCenterInner() {
           >
             <div className="flex items-center justify-between">
               <EnvBadge env="shadow" pulse />
-              <span className="font-mono text-[10px] text-amber-300">
-                谨慎级 · 需人工审批版本
+              <span className="text-[11px] text-amber-300">
+                实时行情 · 虚拟资金
               </span>
             </div>
             <div className="mt-2 text-xs font-semibold text-white">
-              影子模拟交易 (ShadowRunner)
+              ② 模拟盘（实时盘口演练）
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
-              实时行情输入 + 本地模拟盘口撮合，实盘交易 API Key 物理隔离。
+              接入交易所实时行情做虚拟撮合，检验策略在真实盘口下的表现，不动用真实账户资金。
             </p>
           </button>
         </div>
@@ -316,15 +314,15 @@ function LaunchRunCenterInner() {
           >
             <div className="flex items-center justify-between">
               <EnvBadge env="live" pulse />
-              <span className="font-mono text-[10px] font-bold text-rose-300">
-                高危动钱 · 强制三步确认
+              <span className="text-[11px] font-bold text-rose-300">
+                真金白银 · 需三步确认
               </span>
             </div>
             <div className="mt-2 text-xs font-bold text-rose-100">
-              实盘交易部署 (LiveRunner)
+              ③ 实盘交易（连接真实资金）
             </div>
             <p className="mt-0.5 text-[11px] text-rose-200/80">
-              连接真实交易所委托通道，必须通过风控预检并手动输入策略名解锁。
+              向交易所发送真实买卖委托，必须通过保证金与杠杆检查并手动输入策略名确认。
             </p>
           </button>
         </div>
@@ -334,15 +332,15 @@ function LaunchRunCenterInner() {
       <section className="rounded-lg border border-border bg-card p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5 text-xs">
           <div className="space-y-1">
-            <label className="font-medium text-slate-300">目标策略</label>
+            <label className="font-medium text-slate-300">选择策略</label>
             <select
               value={selectedStrategyId}
               onChange={(e) => setSelectedStrategyId(e.target.value)}
-              className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
+              className="h-8 w-full rounded border border-input bg-slate-950 px-2 text-white"
             >
               {(strategiesQuery.data ?? []).map((s) => (
                 <option key={s.strategy_id} value={s.strategy_id}>
-                  {s.name} ({s.strategy_id})
+                  {s.name}
                 </option>
               ))}
             </select>
@@ -353,18 +351,24 @@ function LaunchRunCenterInner() {
             <select
               value={selectedVersionId}
               onChange={(e) => setSelectedVersionId(e.target.value)}
-              className="h-8 w-full rounded border border-input bg-slate-950 px-2 font-mono text-white"
+              className="h-8 w-full rounded border border-input bg-slate-950 px-2 text-white"
             >
               {(detailQuery.data?.versions ?? []).map((v) => (
                 <option key={v.version_id} value={v.version_id}>
-                  v{v.version} [{v.approval_status}]
+                  v{v.version}（
+                  {v.approval_status === "APPROVED"
+                    ? "已审核"
+                    : v.approval_status === "REJECTED"
+                      ? "已退回"
+                      : "待审核"}
+                  ）
                 </option>
               ))}
             </select>
           </div>
 
           <div className="space-y-1">
-            <label className="font-medium text-slate-300">交易对 (SymbolSpec)</label>
+            <label className="font-medium text-slate-300">交易品种</label>
             <select
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}

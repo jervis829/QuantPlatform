@@ -667,11 +667,12 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         needle = q.strip().lower()
         hits: list[GlobalSearchHit] = []
         nav_pages = [
-            ("nav_strategies", "策略工作台 (Strategies)", "巡检所有策略、版本审批与快速回测", "/strategies"),
-            ("nav_ledger", "三环境统一交易账本 (Ledger)", "按环境+策略+币种+状态筛选委托与成交", "/ledger"),
-            ("nav_reconcile", "三层对账看板 (Reconciliation)", "系统vs交易所 / 影子vs实盘 / 回测vs影子归因", "/reconciliation"),
-            ("nav_system", "系统状态与风控审计 (System & Risk)", "连接健康、时钟偏移、沙箱与 Kill Switch 历史", "/system"),
-            ("nav_design", "设计系统与基础组件陈列 (Design System)", "Token、三态组件、危险分级按钮与表格示例", "/design-system"),
+            ("nav_strategies", "我的策略 (Strategies)", "创建策略、跑历史回测与查看 K 线买卖点", "/strategies"),
+            ("nav_launch", "启动运行 (Launch)", "发起历史回测、模拟盘或实盘交易", "/runs/new"),
+            ("nav_ledger", "订单与成交 (Ledger)", "查看全部买卖委托与逐笔成交明细", "/ledger"),
+            ("nav_reconcile", "账户对账 (Reconciliation)", "核对实盘持仓、成交与交易所账目是否一致", "/reconciliation"),
+            ("nav_system", "风控与系统 (System & Risk)", "查看连接状态、风控预警与紧急全停记录", "/system"),
+            ("nav_design", "界面组件示例 (Design System)", "查看平台交互组件与视觉规范", "/design-system"),
         ]
         for nid, title, sub, href in nav_pages:
             if not needle or needle in title.lower() or needle in sub.lower() or needle in href.lower():

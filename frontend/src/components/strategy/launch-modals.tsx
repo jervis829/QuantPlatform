@@ -167,15 +167,12 @@ export function QuickBacktestModal({
           <div className="space-y-3 rounded-lg border border-emerald-500/40 bg-emerald-950/20 p-4 text-xs">
             <div className="flex items-center gap-2 font-semibold text-emerald-300">
               <CheckCircle2 className="h-4 w-4" />
-              <span>回测执行完成！确定性哈希 ID 已落库</span>
-            </div>
-            <div className="font-mono text-[11px] text-slate-300 break-all">
-              run_id: <strong className="text-white">{completedRun.run_id}</strong>
+              <span>回测已完成！您可以立即查看 K 线买卖点与收益表现</span>
             </div>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <Link href={`/reports/${encodeURIComponent(completedRun.run_id)}`}>
                 <Button size="sm" variant="default" onClick={() => onOpenChange(false)}>
-                  <span>查看回测归因报告</span>
+                  <span>查看 K 线买卖点与收益报告</span>
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Button>
               </Link>
@@ -183,7 +180,7 @@ export function QuickBacktestModal({
                 href={`/ledger?env=backtest&runId=${encodeURIComponent(completedRun.run_id)}`}
               >
                 <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>
-                  查看逐笔委托与成交账本
+                  查看订单与成交记录
                 </Button>
               </Link>
             </div>
@@ -312,10 +309,10 @@ export function ShadowLaunchModal({
         <DialogHeader>
           <div className="flex items-center gap-2">
             <EnvBadge env="shadow" pulse />
-            <DialogTitle>启动影子模拟交易 · {strategyName}</DialogTitle>
+            <DialogTitle>启动模拟盘 · {strategyName}</DialogTitle>
           </div>
           <DialogDescription>
-            连接实时盘口并经本地同构撮合成交，物理禁用任何实盘交易 API Key。
+            接入实时行情用虚拟资金模拟撮合，不会动用真实账户资金。
           </DialogDescription>
         </DialogHeader>
 

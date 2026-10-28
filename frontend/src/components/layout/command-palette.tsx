@@ -50,14 +50,14 @@ export function CommandPalette() {
             <Command.Input
               value={search}
               onValueChange={setSearch}
-              placeholder="输入策略 ID、run_id、client_order_id 或页面名称立即跳转..."
+              placeholder="输入策略名、页面名称或订单号快速跳转..."
               className="flex h-11 w-full bg-transparent py-3 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
             />
           </div>
           <Command.List className="max-h-80 overflow-y-auto p-2">
             {hits.length === 0 && (
               <Command.Empty className="py-6 text-center text-xs text-muted-foreground">
-                未找到匹配项（尝试搜索策略名、run_id 或订单号）
+                未找到匹配项（试试输入策略名、页面名或订单号）
               </Command.Empty>
             )}
 
@@ -66,12 +66,12 @@ export function CommandPalette() {
               if (groupItems.length === 0) return null;
               const groupTitle =
                 groupKind === "nav"
-                  ? "页面导航"
+                  ? "功能页面"
                   : groupKind === "strategy"
-                    ? "策略 (Strategies)"
+                    ? "我的策略"
                     : groupKind === "run"
-                      ? "运行记录 (Runs)"
-                      : "委托订单 (Orders)";
+                      ? "运行记录"
+                      : "订单记录";
               return (
                 <Command.Group
                   key={groupKind}

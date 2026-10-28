@@ -384,14 +384,9 @@ export function SchemaParamEditor({
                           />
                         )}
 
-                        <div className="flex flex-wrap items-center justify-between gap-1 font-mono text-[10px] text-slate-400">
+                        <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-slate-400">
                           <span>
-                            默认: {f.defaultValue !== undefined ? String(f.defaultValue) : "必填"}
-                            {f.explicitMeta && (
-                              <span className="ml-1.5 rounded bg-sky-500/15 px-1 py-0.2 text-[9px] text-sky-300">
-                                ui_param
-                              </span>
-                            )}
+                            默认值: {f.defaultValue !== undefined ? String(f.defaultValue) : "必填"}
                           </span>
                           {rangeParts.length > 0 && <span>范围 [{rangeParts.join(", ")}]</span>}
                         </div>
@@ -452,11 +447,11 @@ export function SchemaParamEditor({
                   {dangerDiffs.map((d) => d.field.key).join(", ")}
                 </code>
                 {dangerDiffs.some((d) => d.amplifiesRisk)
-                  ? "（且数值被放大，将直接增加单笔名义敞口与保证金占用）"
+                  ? "（且数值被放大，会直接提高单笔下单金额与保证金占用）"
                   : ""}
-                。保存后系统将自动生成新版本{" "}
-                <strong className="font-mono">v{versionNumber + 1}</strong>{" "}
-                并置为 <strong className="font-mono">PENDING</strong>，需人工重新审批后方可进入影子或实盘（红线 8）。
+                。保存后将生成新版本{" "}
+                <strong className="font-mono">v{versionNumber + 1}</strong>
+                ，可直接跑历史回测；如需上模拟盘或实盘，确认审核通过即可。
               </p>
             </div>
           )}

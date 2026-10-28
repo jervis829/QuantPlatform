@@ -174,10 +174,10 @@ function StrategyDetailInner() {
       {
         id: "run_id",
         accessorKey: "run_id",
-        header: "确定性 Run ID",
+        header: "运行编号",
         cell: ({ row }) => (
           <code className="font-mono text-xs text-slate-200">
-            {row.original.run_id.slice(0, 26)}...
+            {row.original.run_id.slice(0, 22)}...
           </code>
         ),
       },
@@ -316,7 +316,7 @@ function StrategyDetailInner() {
                 className="inline-flex items-center gap-1 hover:text-white"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                <span>策略工作台</span>
+                <span>返回我的策略</span>
               </Link>
               <span>/</span>
               <code className="font-mono text-slate-300">{meta.strategy_id}</code>
@@ -337,51 +337,71 @@ function StrategyDetailInner() {
 
           {/* Version Switcher right in Overview Header */}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400">当前查看版本:</span>
+            <span className="text-xs text-slate-400">当前版本:</span>
             <select
               value={selectedVersion.version_id}
               onChange={(e) => setSelectedVersionId(e.target.value)}
-              className="h-8 rounded border border-border bg-slate-950 px-2.5 font-mono text-xs text-white focus:border-blue-500 focus:outline-none"
+              className="h-8 rounded border border-border bg-slate-950 px-2.5 text-xs text-white focus:border-blue-500 focus:outline-none"
             >
               {[...detail.versions]
                 .sort((a, b) => b.version - a.version)
                 .map((v) => (
                   <option key={v.version_id} value={v.version_id}>
-                    v{v.version} ({v.approval_status}) · {v.source_type}
+                    第 {v.version} 版 (v{v.version} ·{" "}
+                    {v.approval_status === "APPROVED"
+                      ? "已审核"
+                      : v.approval_status === "REJECTED"
+                        ? "已退回"
+                        : "待审核"}
+                    )
                   </option>
                 ))}
             </select>
           </div>
         </div>
 
-        {/* Persistent Above-the-Fold Operator Intervention Banner if Unapproved */}
+        {/* Simple, Actionable Approval Banner if Unapproved */}
         {selectedVersion.approval_status !== "APPROVED" && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/45 bg-amber-950/25 px-3 py-2 text-xs text-amber-200">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
               <span>
-                当前选定版本 <strong className="font-mono">v{selectedVersion.version}</strong> 状态为{" "}
-                <strong className="font-mono">{selectedVersion.approval_status}</strong>：允许自由回测，但在人工审批通过前禁止启动影子模拟或实盘交易（红线 8）。
+                当前版本 <strong className="font-mono">v{selectedVersion.version}</strong> 尚未审核：您可以随时免费跑<strong>历史回测</strong>；确认策略无误后点击右侧「确认审核通过」，即可解锁模拟盘与实盘。
               </span>
             </div>
-            <Button
-              size="sm"
-              variant="shadow"
-              onClick={() => switchSection("code")}
-            >
-              前往审阅 Diff 并执行人工审批 →
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => switchSection("code")}
+              >
+                查看策略代码
+              </Button>
+              {canApprove && (
+                <Button
+                  size="sm"
+                  variant="shadow"
+                  disabled={approveMutation.isPending}
+                  onClick={() =>
+                    approveMutation.mutate({
+                      versionId: selectedVersion.version_id,
+                      note: "人工确认审核通过",
+                    })
+                  }
+                >
+                  {approveMutation.isPending ? "正在确认..." : "✓ 确认审核通过"}
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
         {/* First-Glance KPI Cards (4 Core Metrics Above the Fold) */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiMetricCard
-            label="最近回测累计收益率"
-            timeWindow="最新回测窗口"
-            benchmarkLabel={
-              btMetrics ? `Run: ${btMetrics.run_id.slice(0, 14)}...` : "尚未执行回测"
-            }
+            label="最近回测收益率"
+            timeWindow="历史验证"
+            benchmarkLabel={btMetrics ? "点击右侧按钮可看 K 线" : "尚未跑过回测"}
           >
             {btMetrics ? (
               <NumericDisplay
@@ -396,9 +416,9 @@ function StrategyDetailInner() {
           </KpiMetricCard>
 
           <KpiMetricCard
-            label="最近回测最大回撤 / 夏普"
-            timeWindow="风险调整收益"
-            benchmarkLabel={btMetrics ? `Sharpe: ${btMetrics.sharpe.toFixed(2)}` : "—"}
+            label="最大回撤 / 夏普"
+            timeWindow="风险收益比"
+            benchmarkLabel={btMetrics ? `夏普比率: ${btMetrics.sharpe.toFixed(2)}` : "—"}
           >
             {btMetrics ? (
               <span className="font-mono text-rose-300">
@@ -410,9 +430,9 @@ function StrategyDetailInner() {
           </KpiMetricCard>
 
           <KpiMetricCard
-            label="今日实盘净盈亏"
-            timeWindow="LIVE UTC 24H"
-            benchmarkLabel="统一账本已实现归因"
+            label="今日实盘盈亏"
+            timeWindow="近 24 小时"
+            benchmarkLabel="实盘已实现收益"
           >
             <NumericDisplay
               value={meta.live_today_pnl_usdt ?? "0"}
@@ -423,9 +443,9 @@ function StrategyDetailInner() {
           </KpiMetricCard>
 
           <KpiMetricCard
-            label="三环境累计运行记录"
-            timeWindow="同构管线"
-            benchmarkLabel={`BT ${runCounts.backtest} · SH ${runCounts.shadow} · LIVE ${runCounts.live}`}
+            label="累计运行次数"
+            timeWindow="全部记录"
+            benchmarkLabel={`回测 ${runCounts.backtest} · 模拟 ${runCounts.shadow} · 实盘 ${runCounts.live}`}
             onClick={() => switchSection("runs")}
           >
             <span className="font-mono">{runCounts.all} 次</span>
@@ -441,20 +461,28 @@ function StrategyDetailInner() {
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-3.5 lg:col-span-7">
           <div>
             <div className="text-xs font-semibold text-slate-100">
-              投研与模拟验证操作区（不触碰真实资金）
+              验证策略（零真实资金风险）
             </div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">
-              针对版本 <code className="font-mono text-slate-200">v{selectedVersion.version}</code> 发起历史回测或实时盘口影子模拟。
+              先跑「历史回测」看过去收益与 K 线买卖点，再用「模拟盘」接入实时行情演练。
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {btMetrics && (
+              <Link href={`/reports/${encodeURIComponent(btMetrics.run_id)}`}>
+                <Button variant="outline">
+                  <span>查看回测K线</span>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Button>
+              </Link>
+            )}
             <BacktestActionButton onClick={() => setBtModalOpen(true)}>
               <Play className="h-3.5 w-3.5 fill-current" />
-              <span>发起回测</span>
+              <span>跑历史回测</span>
             </BacktestActionButton>
             <ShadowActionButton onClick={() => setShModalOpen(true)}>
-              <span>发起影子交易</span>
+              <span>启动模拟盘</span>
             </ShadowActionButton>
           </div>
         </div>
@@ -462,11 +490,11 @@ function StrategyDetailInner() {
         {/* Physically Isolated Live Capital Danger Zone (5 cols) */}
         <div className="lg:col-span-5">
           <IsolatedDangerZone
-            title="实盘动钱隔离区 (LIVE CAPITAL)"
-            subtitle="需经账户核验 → 保证金/单笔上限/杠杆风控预检 → 手动输入策略 ID 三步确认。"
+            title="实盘交易区（真金白银）"
+            subtitle="需完成账户确认 → 保证金与杠杆检查 → 输入策略名三步安全核验。"
           >
             <LiveDangerActionButton onClick={() => setLiveWizardOpen(true)}>
-              部署至实盘 (LIVE)
+              启动实盘交易
             </LiveDangerActionButton>
           </IsolatedDangerZone>
         </div>
@@ -481,22 +509,22 @@ function StrategyDetailInner() {
             [
               {
                 id: "config",
-                label: "参数配置与变更对比",
+                label: "调整参数",
                 icon: SlidersHorizontal,
               },
               {
                 id: "code",
-                label: `源码、版本历史与人工审批 (${detail.versions.length})`,
+                label: `策略代码与版本 (${detail.versions.length})`,
                 icon: Code2,
               },
               {
                 id: "runs",
-                label: `三环境运行记录 (${runCounts.all})`,
+                label: `运行记录 (${runCounts.all})`,
                 icon: History,
               },
               {
                 id: "logs",
-                label: "实时与历史日志流",
+                label: "运行日志",
                 icon: ScrollText,
               },
             ] as Array<{ id: DetailSection; label: string; icon: React.ComponentType<{ className?: string }> }>

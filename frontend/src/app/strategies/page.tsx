@@ -8,9 +8,11 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Code2,
+  LineChart,
   Play,
   Plus,
   Sparkles,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -40,15 +42,15 @@ function needsOperatorIntervention(s: StrategySummaryItem): {
 } {
   const status = (s.latest_approval_status || "PENDING").toUpperCase();
   if (status === "REJECTED") {
-    return { needed: true, reason: "版本已驳回 · 需修订", tone: "danger" };
-  }
-  if (status === "PENDING") {
-    return { needed: true, reason: "待人工审批 (红线8)", tone: "warning" };
+    return { needed: true, reason: "已退回 · 需修改参数或代码", tone: "danger" };
   }
   if (!s.latest_backtest_metrics) {
-    return { needed: true, reason: "尚未执行回测验证", tone: "warning" };
+    return { needed: true, reason: "建议先跑一次回测", tone: "warning" };
   }
-  return { needed: false, reason: "已审批且回测就绪", tone: "ok" };
+  if (status === "PENDING") {
+    return { needed: true, reason: "待审核（上实盘前需确认）", tone: "warning" };
+  }
+  return { needed: false, reason: "状态就绪", tone: "ok" };
 }
 
 function StrategiesWorkbenchInner() {
@@ -56,8 +58,9 @@ function StrategiesWorkbenchInner() {
   const { apiKey } = usePreferences();
 
   const [patrolFilter, setPatrolFilter] = useState<PatrolFilter>("ALL");
+  const [showGuide, setShowGuide] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createDefaultMode, setCreateDefaultMode] = useState<"python" | "nl">("python");
+  const [createDefaultMode, setCreateDefaultMode] = useState<"python" | "nl">("nl");
   const [quickBtTarget, setQuickBtTarget] = useState<{
     strategyId: string;
     name: string;
@@ -117,7 +120,7 @@ function StrategiesWorkbenchInner() {
       {
         id: "strategy",
         accessorFn: (r) => `${r.name} ${r.strategy_id}`,
-        header: "策略名称 / ID",
+        header: "策略名称",
         cell: ({ row }) => {
           const s = row.original;
           const isNl = s.source_type === "NL_GENERATED";
@@ -133,61 +136,23 @@ function StrategiesWorkbenchInner() {
                 </Link>
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px]",
+                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]",
                     isNl
                       ? "bg-violet-500/20 text-violet-300"
                       : "bg-slate-800 text-slate-300"
                   )}
                 >
-                  {isNl ? "NL生成" : "Python"}
+                  {isNl ? "一句话生成" : "Python"}
+                </span>
+                <span className="rounded bg-slate-800/80 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                  v{s.current_version}
                 </span>
               </div>
-              <div className="font-mono text-[11px] text-slate-400">{s.strategy_id}</div>
-            </div>
-          );
-        },
-      },
-      {
-        id: "version_approval",
-        accessorFn: (r) => `${r.current_version}_${r.latest_approval_status ?? "PENDING"}`,
-        header: "最新版本与审批门禁",
-        cell: ({ row }) => {
-          const s = row.original;
-          return (
-            <div className="flex items-center gap-2">
-              <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs font-bold text-slate-200">
-                v{s.current_version}
-              </span>
-              <ApprovalBadge status={s.latest_approval_status ?? "PENDING"} />
-            </div>
-          );
-        },
-      },
-      {
-        id: "envs",
-        accessorFn: (r) =>
-          (r.run_counts?.live ?? 0) * 1000 +
-          (r.run_counts?.shadow ?? 0) * 100 +
-          (r.run_counts?.backtest ?? 0),
-        header: "三环境运行分布",
-        cell: ({ row }) => {
-          const s = row.original;
-          const bt = s.run_counts?.backtest ?? 0;
-          const sh = s.run_counts?.shadow ?? 0;
-          const lv = s.run_counts?.live ?? 0;
-          const activeEnvs = s.active_envs ?? [];
-          return (
-            <div className="space-y-1">
-              <div className="flex flex-wrap items-center gap-1">
-                {activeEnvs.length > 0 ? (
-                  activeEnvs.map((e) => <EnvBadge key={e} env={e} pulse={e === "live"} />)
-                ) : (
-                  <span className="text-[11px] text-slate-500">当前无常驻实例</span>
-                )}
-              </div>
-              <div className="font-mono text-[10px] text-slate-400">
-                历史: BT {bt} · SH {sh} · LIVE {lv}
-              </div>
+              {s.description && (
+                <div className="max-w-xs truncate text-[11px] text-slate-400">
+                  {s.description}
+                </div>
+              )}
             </div>
           );
         },
@@ -195,11 +160,11 @@ function StrategiesWorkbenchInner() {
       {
         id: "bt_return",
         accessorFn: (r) => r.latest_backtest_metrics?.cumulative_return ?? -999,
-        header: "近期回测收益",
+        header: "最近回测收益",
         meta: { align: "right", mono: true },
         cell: ({ row }) => {
           const m = row.original.latest_backtest_metrics;
-          if (!m) return <span className="text-slate-500">未回测</span>;
+          if (!m) return <span className="text-slate-500">尚未回测</span>;
           return (
             <NumericDisplay
               value={m.cumulative_return}
@@ -225,67 +190,94 @@ function StrategiesWorkbenchInner() {
                 {(Math.abs(m.max_drawdown) * -100).toFixed(2)}%
               </div>
               <div className="text-[10px] text-slate-400">
-                Sharpe {m.sharpe.toFixed(2)}
+                夏普 {m.sharpe.toFixed(2)}
               </div>
             </div>
           );
         },
       },
       {
-        id: "live_pnl",
-        accessorFn: (r) => Number(r.live_today_pnl_usdt ?? 0),
-        header: "今日实盘盈亏",
-        meta: { align: "right", mono: true },
-        cell: ({ row }) => (
-          <NumericDisplay
-            value={row.original.live_today_pnl_usdt ?? "0"}
-            mode="currency"
-            coloredBySign
-            showPlusSign
-          />
-        ),
+        id: "envs",
+        accessorFn: (r) =>
+          (r.run_counts?.live ?? 0) * 1000 +
+          (r.run_counts?.shadow ?? 0) * 100 +
+          (r.run_counts?.backtest ?? 0),
+        header: "运行记录",
+        cell: ({ row }) => {
+          const s = row.original;
+          const bt = s.run_counts?.backtest ?? 0;
+          const sh = s.run_counts?.shadow ?? 0;
+          const lv = s.run_counts?.live ?? 0;
+          const activeEnvs = s.active_envs ?? [];
+          return (
+            <div className="space-y-1">
+              {activeEnvs.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  {activeEnvs.map((e) => (
+                    <EnvBadge key={e} env={e} pulse={e === "live"} />
+                  ))}
+                </div>
+              )}
+              <div className="text-[11px] text-slate-400">
+                回测 {bt} · 模拟 {sh} · 实盘 {lv}
+              </div>
+            </div>
+          );
+        },
       },
       {
-        id: "intervention",
+        id: "status_hint",
         accessorFn: (r) => (needsOperatorIntervention(r).needed ? 1 : 0),
-        header: "巡检诊断 (是否需介入)",
+        header: "当前状态",
         cell: ({ row }) => {
-          const diag = needsOperatorIntervention(row.original);
+          const s = row.original;
+          const diag = needsOperatorIntervention(s);
           return (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium",
-                diag.tone === "danger"
-                  ? "bg-rose-500/20 text-rose-300"
-                  : diag.tone === "warning"
-                    ? "bg-amber-500/20 text-amber-300"
-                    : "bg-emerald-500/15 text-emerald-300"
-              )}
-            >
-              {diag.needed ? (
-                <AlertCircle className="h-3 w-3 shrink-0" />
-              ) : (
-                <CheckCircle2 className="h-3 w-3 shrink-0" />
-              )}
-              <span>{diag.reason}</span>
-            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <ApprovalBadge status={s.latest_approval_status ?? "PENDING"} />
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 text-[11px]",
+                  diag.tone === "danger"
+                    ? "text-rose-300"
+                    : diag.tone === "warning"
+                      ? "text-amber-300"
+                      : "text-emerald-300"
+                )}
+              >
+                {diag.needed ? (
+                  <AlertCircle className="h-3 w-3 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="h-3 w-3 shrink-0" />
+                )}
+                <span>{diag.reason}</span>
+              </span>
+            </div>
           );
         },
       },
       {
         id: "actions",
-        header: "安全快捷操作",
+        header: "快捷操作",
         enableSorting: false,
         meta: { align: "right" },
         cell: ({ row }) => {
           const s = row.original;
           const latestVersionId = `${s.strategy_id}:v${s.current_version}`;
+          const latestBtRunId = s.latest_backtest_metrics?.run_id;
           return (
             <div
               className="inline-flex items-center justify-end gap-1.5"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Click 1 -> Opens 1-screen QuickBacktestModal; Click 2 -> Immediate Backtest! (<= 3 clicks) */}
+              {latestBtRunId && (
+                <Link href={`/reports/${encodeURIComponent(latestBtRunId)}`}>
+                  <Button size="sm" variant="secondary" title="查看最近回测 K 线买卖点与收益报告">
+                    <LineChart className="h-3.5 w-3.5 text-sky-400" />
+                    <span>看回测K线</span>
+                  </Button>
+                </Link>
+              )}
               <BacktestActionButton
                 size="sm"
                 onClick={() =>
@@ -297,11 +289,11 @@ function StrategiesWorkbenchInner() {
                 }
               >
                 <Play className="h-3 w-3 fill-current" />
-                <span>快速回测</span>
+                <span>跑回测</span>
               </BacktestActionButton>
               <Link href={`/strategies/${encodeURIComponent(s.strategy_id)}`}>
                 <Button size="sm" variant="outline">
-                  <span>详情</span>
+                  <span>管理</span>
                   <ArrowUpRight className="h-3.5 w-3.5" />
                 </Button>
               </Link>
@@ -317,30 +309,30 @@ function StrategiesWorkbenchInner() {
     strategiesQuery.error instanceof QuantApiError ? strategiesQuery.error : null;
 
   return (
-    <div className="space-y-5">
-      {/* Top Header: Title + Primary Strategy Registration Actions */}
+    <div className="space-y-4">
+      {/* Top Header: Clean Title + Simple Creation Buttons */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-white">策略巡检工作台</h1>
+          <h1 className="text-lg font-semibold text-white">我的策略</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            10 秒快速巡检全部策略状态、近期回测表现与待审批项；行内仅保留安全回测入口，实盘操作严格隔离于策略详情危险区。
+            创建、回测并管理您的量化策略。先跑历史回测查看 K 线买卖点，满意后再开启模拟盘或实盘。
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
-            variant="secondary"
+            variant="default"
             size="default"
             onClick={() => {
               setCreateDefaultMode("nl");
               setCreateOpen(true);
             }}
           >
-            <Sparkles className="h-3.5 w-3.5 text-violet-400" />
-            <span>自然语言生成策略 (NL)</span>
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>一句话新建策略</span>
           </Button>
           <Button
-            variant="default"
+            variant="outline"
             size="default"
             onClick={() => {
               setCreateDefaultMode("python");
@@ -348,26 +340,63 @@ function StrategiesWorkbenchInner() {
             }}
           >
             <Plus className="h-4 w-4" />
-            <span>上传 Python 策略</span>
+            <span>编写 Python 策略</span>
           </Button>
         </div>
       </div>
 
-      {/* First-Glance Patrol KPI Layer (4 Cards) */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Dismissible 3-Step First-Time User Quickstart Guide */}
+      {showGuide && (
+        <div className="relative rounded-lg border border-blue-500/30 bg-blue-950/20 p-3.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setShowGuide(false)}
+            className="absolute right-3 top-3 rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+            title="不再显示新手引导"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+          <div className="mb-2 font-semibold text-blue-200">
+            新手三步快速上手：
+          </div>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+            <div className="rounded border border-slate-800/90 bg-slate-950/70 p-2.5">
+              <div className="font-semibold text-white">① 新建策略</div>
+              <p className="mt-0.5 text-[11px] text-slate-300">
+                点击右上角「一句话新建策略」，直接用中文输入买卖想法（无需手写代码）。
+              </p>
+            </div>
+            <div className="rounded border border-slate-800/90 bg-slate-950/70 p-2.5">
+              <div className="font-semibold text-white">② 跑回测看 K 线买卖点</div>
+              <p className="mt-0.5 text-[11px] text-slate-300">
+                点击列表右侧「跑回测」验证历史收益，再点「看回测K线」检查每笔买点与卖点。
+              </p>
+            </div>
+            <div className="rounded border border-slate-800/90 bg-slate-950/70 p-2.5">
+              <div className="font-semibold text-white">③ 模拟盘验证 → 开启实盘</div>
+              <p className="mt-0.5 text-[11px] text-slate-300">
+                点击「管理」审核通过后，可先开启「模拟盘」（真实行情不花真钱），稳健后再上实盘。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* First-Glance KPI Layer (4 Clean Cards) */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiMetricCard
-          label="已注册策略总数"
-          timeWindow="全平台版本库"
-          benchmarkLabel={`Python ${summary.pythonCount} · NL生成 ${summary.nlCount}`}
+          label="策略总数"
+          timeWindow="当前账号"
+          benchmarkLabel={`一句话生成 ${summary.nlCount} · 代码编写 ${summary.pythonCount}`}
         >
           <span className="font-mono">{summary.total}</span>
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="需人工介入策略数"
-          timeWindow="审批门禁 / 未回测"
+          label="待处理策略"
+          timeWindow="待回测 / 待审核"
           alertTone={summary.pendingOrActionCount > 0 ? "warning" : "none"}
-          benchmarkLabel="点击下方「需人工介入」一键聚焦"
+          benchmarkLabel="点击筛选待处理项"
           onClick={() =>
             setPatrolFilter((f) => (f === "NEEDS_ACTION" ? "ALL" : "NEEDS_ACTION"))
           }
@@ -383,8 +412,8 @@ function StrategiesWorkbenchInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="涉及实盘记录策略数"
-          timeWindow="LIVE 环境"
+          label="实盘运行中"
+          timeWindow="真金白银交易"
           benchmarkLabel="点击筛选实盘策略"
           onClick={() =>
             setPatrolFilter((f) => (f === "LIVE_ACTIVE" ? "ALL" : "LIVE_ACTIVE"))
@@ -394,9 +423,9 @@ function StrategiesWorkbenchInner() {
         </KpiMetricCard>
 
         <KpiMetricCard
-          label="今日策略实盘净盈亏合计"
-          timeWindow="UTC 24H"
-          benchmarkLabel="统一账本已实现归因"
+          label="今日实盘盈亏"
+          timeWindow="近 24 小时"
+          benchmarkLabel="已实现净收益"
         >
           <NumericDisplay
             value={summary.totalLivePnl}
@@ -410,8 +439,8 @@ function StrategiesWorkbenchInner() {
       {/* Main Content: Tri-State Handling + QuantDataTable */}
       {strategiesQuery.isLoading ? (
         <RunLoadingState
-          title="正在拉取策略注册表与近期表现指标..."
-          currentStageLabel="聚合各版本审批状态、运行分布与最近回测绩效"
+          title="正在加载策略列表..."
+          currentStageLabel="读取策略与近期回测收益"
           progressPct={60}
         />
       ) : strategiesQuery.isError ? (
@@ -419,7 +448,7 @@ function StrategiesWorkbenchInner() {
           title="加载策略列表失败"
           reasonCode={apiErr?.reasonCode ?? "STRATEGIES_FETCH_FAILED"}
           message={apiErr?.message ?? String(strategiesQuery.error)}
-          remediation="请确认后端 API 服务运行正常且当前 RBAC 令牌有效。"
+          remediation="请刷新页面或检查网络连接后重试。"
           rawDetail={apiErr?.rawDetail}
           actions={[
             {
@@ -430,21 +459,21 @@ function StrategiesWorkbenchInner() {
         />
       ) : allStrategies.length === 0 ? (
         <EmptyState
-          title="当前尚无已注册的交易策略"
-          description="您可以直接上传继承自 Strategy 的 Python 源码（经受限 AST 与无网络沙箱校验），或用自然语言描述逻辑生成策略并自动执行回测门禁。"
+          title="还没有任何策略，花 10 秒创建第一个吧"
+          description="您可以用一句中文描述买卖规则自动生成策略，也可以直接粘贴 Python 代码。"
           icon={<Code2 className="h-5 w-5 text-slate-400" />}
           primaryAction={{
-            label: "上传首个 Python 策略",
+            label: "一句话生成第一个策略",
             onClick: () => {
-              setCreateDefaultMode("python");
+              setCreateDefaultMode("nl");
               setCreateOpen(true);
             },
           }}
           secondaryAction={{
-            label: "使用自然语言生成策略 (NL)",
-            variant: "secondary",
+            label: "编写 Python 策略",
+            variant: "outline",
             onClick: () => {
-              setCreateDefaultMode("nl");
+              setCreateDefaultMode("python");
               setCreateOpen(true);
             },
           }}
@@ -463,9 +492,9 @@ function StrategiesWorkbenchInner() {
               {(
                 [
                   ["ALL", `全部 (${allStrategies.length})`],
-                  ["NEEDS_ACTION", `需人工介入 (${summary.pendingOrActionCount})`],
-                  ["APPROVED_READY", "已审批就绪"],
-                  ["LIVE_ACTIVE", `实盘相关 (${summary.liveActiveCount})`],
+                  ["NEEDS_ACTION", `待处理 (${summary.pendingOrActionCount})`],
+                  ["APPROVED_READY", "已审核"],
+                  ["LIVE_ACTIVE", `实盘 (${summary.liveActiveCount})`],
                 ] as Array<[PatrolFilter, string]>
               ).map(([id, label]) => (
                 <button
@@ -487,34 +516,34 @@ function StrategiesWorkbenchInner() {
           renderExpandedRow={(s) => (
             <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-4">
               <div>
-                <div className="text-slate-400">策略描述</div>
-                <div className="mt-0.5 text-slate-200">{s.description || "无描述"}</div>
+                <div className="text-slate-400">策略说明</div>
+                <div className="mt-0.5 text-slate-200">{s.description || "无备注"}</div>
               </div>
               <div>
-                <div className="text-slate-400">创建人 / 最近更新</div>
+                <div className="text-slate-400">策略 ID / 最近更新</div>
                 <div className="mt-0.5 font-mono text-slate-200">
-                  {s.created_by} · {formatUtcTimestamp(s.updated_at_ms, false)}
+                  {s.strategy_id} · {formatUtcTimestamp(s.updated_at_ms, false)}
                 </div>
               </div>
               <div>
-                <div className="text-slate-400">最近回测 Run ID</div>
-                <div className="mt-0.5 font-mono text-sky-300">
+                <div className="text-slate-400">最近回测报告</div>
+                <div className="mt-0.5 text-sky-300">
                   {s.latest_backtest_metrics ? (
                     <Link
                       href={`/reports/${encodeURIComponent(s.latest_backtest_metrics.run_id)}`}
                       className="hover:underline"
                     >
-                      {s.latest_backtest_metrics.run_id.slice(0, 24)}...
+                      点击打开 K 线买卖点与收益报告 →
                     </Link>
                   ) : (
-                    "暂无回测记录"
+                    <span className="text-slate-500">暂无回测记录</span>
                   )}
                 </div>
               </div>
               <div className="flex items-center justify-end">
                 <Link href={`/strategies/${encodeURIComponent(s.strategy_id)}`}>
                   <Button size="sm" variant="secondary">
-                    进入详情配置参数与查看源码 →
+                    调整参数 / 开启模拟盘或实盘 →
                   </Button>
                 </Link>
               </div>
@@ -549,8 +578,8 @@ export default function StrategiesWorkbenchPage() {
   return (
     <Suspense
       fallback={
-        <div className="p-6 font-mono text-xs text-muted-foreground">
-          正在加载策略工作台...
+        <div className="p-6 text-xs text-muted-foreground">
+          正在加载我的策略...
         </div>
       }
     >

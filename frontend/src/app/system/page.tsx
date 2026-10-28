@@ -253,11 +253,9 @@ function SystemStatusInner() {
       {/* Header + Maintenance Mode + Kill Switch Trigger */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-white">
-            系统状态、风控监控与防篡改审计中心 (/system)
-          </h1>
+          <h1 className="text-lg font-semibold text-white">风控与系统监控</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            全面监控交易所连接、毫秒时钟偏移、限频命中、隔离沙箱资源、风控告警历史与 Kill Switch 审计链；点击任意异常卡片可查看详细原因。
+            查看交易所连接状态、风控预警记录、策略安全运行沙箱与紧急全停操作日志。
           </p>
         </div>
 
@@ -272,8 +270,8 @@ function SystemStatusInner() {
               <Wrench className="h-3.5 w-3.5" />
               <span>
                 {diag.maintenance_mode
-                  ? "维护模式已开启（点击恢复实盘开新仓）"
-                  : "开启全局维护模式（阻断新开仓）"}
+                  ? "暂停开新仓中（点击恢复）"
+                  : "暂停开新仓（维护模式）"}
               </span>
             </Button>
           )}
@@ -283,7 +281,7 @@ function SystemStatusInner() {
             onClick={() => setKillSwitchModalOpen(true)}
           >
             <ShieldAlert className="h-3.5 w-3.5" />
-            <span>紧急停机预览与触发</span>
+            <span>紧急全停（撤单并平仓）</span>
           </Button>
         </div>
       </div>

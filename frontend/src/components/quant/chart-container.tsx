@@ -190,6 +190,7 @@ export function FinancialChartContainer({
   const [showEma, setShowEma] = useState(false);
   const [showBoll, setShowBoll] = useState(false);
   const [showTradePaths, setShowTradePaths] = useState(true);
+  const [showMoreTools, setShowMoreTools] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [selectedMarkerIdx, setSelectedMarkerIdx] = useState<number | null>(null);
   const [hoveredBucketFills, setHoveredBucketFills] = useState<IndexedTradeMarker[]>([]);
@@ -855,8 +856,8 @@ export function FinancialChartContainer({
             ))}
           </div>
 
-          {/* Indicator Overlay Toggles */}
-          <div className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 text-[11px] font-mono">
+          {/* Primary Indicator Toggles */}
+          <div className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 text-[11px]">
             <button
               type="button"
               onClick={() => setShowMa((v) => !v)}
@@ -865,17 +866,7 @@ export function FinancialChartContainer({
                 showMa ? "bg-amber-500/20 text-amber-300 font-semibold" : "text-slate-400 hover:text-slate-200"
               )}
             >
-              MA5/10/20
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowEma((v) => !v)}
-              className={cn(
-                "rounded px-1.5 py-0.5 transition-colors",
-                showEma ? "bg-pink-500/20 text-pink-300 font-semibold" : "text-slate-400 hover:text-slate-200"
-              )}
-            >
-              EMA20
+              均线 MA
             </button>
             <button
               type="button"
@@ -885,7 +876,7 @@ export function FinancialChartContainer({
                 showBoll ? "bg-indigo-500/20 text-indigo-300 font-semibold" : "text-slate-400 hover:text-slate-200"
               )}
             >
-              BOLL
+              布林带
             </button>
             {roundTrips.length > 0 && (
               <button
@@ -897,21 +888,21 @@ export function FinancialChartContainer({
                     ? "bg-emerald-500/20 text-emerald-300 font-semibold"
                     : "text-slate-400 hover:text-slate-200"
                 )}
-                title="在 K 线上绘制每笔开仓点到平仓点的持仓轨迹虚线"
+                title="在 K 线上连接每笔买入开仓点与卖出平仓点"
               >
-                开平连线
+                买卖连线
               </button>
             )}
           </div>
 
           {/* Buy / Sell Marker Filter */}
-          <div className="inline-flex items-center rounded border border-slate-800 bg-slate-900 p-0.5 font-mono text-[10px]">
+          <div className="inline-flex items-center rounded border border-slate-800 bg-slate-900 p-0.5 text-[11px]">
             {(
               [
-                ["ALL", `全部买卖 (${indexedMarkers.length})`],
-                ["BUY", `买点 (${buyCount})`],
-                ["SELL", `卖点 (${sellCount})`],
-                ["NONE", "隐藏标注"],
+                ["ALL", `全部买卖点 (${indexedMarkers.length})`],
+                ["BUY", `只看买点 (${buyCount})`],
+                ["SELL", `只看卖点 (${sellCount})`],
+                ["NONE", "隐藏"],
               ] as Array<[MarkerFilter, string]>
             ).map(([key, lbl]) => (
               <button
@@ -931,80 +922,36 @@ export function FinancialChartContainer({
           </div>
         </div>
 
-        {/* Right Controls: Buy/Sell Stepper + Viewport Zoom + Export */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        {/* Right Controls: Clean Buy/Sell Stepper + Reset + More Tools + Fullscreen */}
+        <div className="relative flex flex-wrap items-center gap-1.5">
           {indexedMarkers.length > 0 && (
-            <div className="inline-flex items-center gap-1 rounded border border-sky-500/35 bg-sky-950/25 px-1.5 py-0.5 font-mono text-[11px] text-sky-200">
+            <div className="inline-flex items-center gap-1 rounded border border-sky-500/35 bg-sky-950/25 px-1.5 py-0.5 text-[11px] text-sky-200">
               <button
                 type="button"
                 onClick={() => stepMarker(-1)}
                 className="rounded p-0.5 hover:bg-sky-500/20"
-                title="定位上一个买卖执行点"
+                title="定位上一笔买卖点"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-              <span className="px-1">
-                买卖点{" "}
+              <span className="px-1 font-mono">
+                第{" "}
                 <strong className="text-white">
                   {selectedMarkerIdx !== null ? selectedMarkerIdx + 1 : "—"}
-                </strong>{" "}
-                / {indexedMarkers.length}
+                </strong>
+                /{indexedMarkers.length} 笔
               </span>
               <button
                 type="button"
                 onClick={() => stepMarker(1)}
                 className="rounded p-0.5 hover:bg-sky-500/20"
-                title="定位下一个买卖执行点"
+                title="定位下一笔买卖点"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
 
-          <div className="inline-flex rounded border border-slate-800 bg-slate-900 p-0.5">
-            {(
-              [
-                ["30B", "近30根"],
-                ["60B", "近60根"],
-                ["ALL", "全量"],
-              ] as Array<[RangePreset, string]>
-            ).map(([preset, lbl]) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setRangePreset(preset)}
-                className={cn(
-                  "rounded px-2 py-0.5 font-mono text-[10px]",
-                  rangePreset === preset
-                    ? "bg-blue-600 text-white font-semibold"
-                    : "text-slate-400 hover:text-slate-200"
-                )}
-              >
-                {lbl}
-              </button>
-            ))}
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2"
-            onClick={() => handleZoom(0.7)}
-            title="放大 K 线"
-          >
-            <ZoomIn className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2"
-            onClick={() => handleZoom(1.4)}
-            title="缩小 K 线"
-          >
-            <ZoomOut className="h-3.5 w-3.5" />
-          </Button>
           <Button
             type="button"
             variant="outline"
@@ -1015,30 +962,106 @@ export function FinancialChartContainer({
               setRangePreset("ALL");
               mainChartRef.current?.timeScale().fitContent();
             }}
-            title="自适应重置全图视野"
+            title="重置全图视野"
           >
             <RotateCcw className="h-3.5 w-3.5" />
+            <span>重置视野</span>
           </Button>
+
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 px-2"
-            onClick={handleExportCsv}
+            className="h-7 px-2.5"
+            onClick={() => setShowMoreTools((v) => !v)}
           >
-            <Download className="h-3.5 w-3.5" />
-            <span>CSV</span>
+            <span>更多工具 ▾</span>
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2"
-            onClick={handleExportPng}
-          >
-            <Camera className="h-3.5 w-3.5" />
-            <span>截图</span>
-          </Button>
+
+          {showMoreTools && (
+            <div className="absolute right-10 top-9 z-30 w-60 rounded-lg border border-border bg-popover p-3 shadow-2xl space-y-2.5 text-xs">
+              <div className="space-y-1">
+                <div className="text-[11px] font-semibold text-slate-300">视野范围与缩放</div>
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      ["30B", "近30根"],
+                      ["60B", "近60根"],
+                      ["ALL", "全部"],
+                    ] as Array<[RangePreset, string]>
+                  ).map(([preset, lbl]) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setRangePreset(preset)}
+                      className={cn(
+                        "flex-1 rounded border border-slate-800 py-1 text-[11px]",
+                        rangePreset === preset
+                          ? "bg-blue-600 text-white font-semibold"
+                          : "bg-slate-950 text-slate-300 hover:text-white"
+                      )}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => handleZoom(0.7)}
+                    title="放大"
+                  >
+                    <ZoomIn className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => handleZoom(1.4)}
+                    title="缩小"
+                  >
+                    <ZoomOut className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <label className="flex items-center justify-between rounded border border-slate-800 px-2 py-1.5 text-slate-200 cursor-pointer hover:bg-slate-800/60">
+                <span>叠加 EMA20 指数均线</span>
+                <input
+                  type="checkbox"
+                  checked={showEma}
+                  onChange={() => setShowEma((v) => !v)}
+                  className="accent-blue-500"
+                />
+              </label>
+
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-800">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 h-7"
+                  onClick={handleExportCsv}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>导出 CSV</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 h-7"
+                  onClick={handleExportPng}
+                >
+                  <Camera className="h-3.5 w-3.5" />
+                  <span>保存图片</span>
+                </Button>
+              </div>
+            </div>
+          )}
+
           <Button
             type="button"
             variant="outline"
