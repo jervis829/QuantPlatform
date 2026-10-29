@@ -562,7 +562,13 @@ class BacktestBroker(BrokerAdapter):
         return fills
 
     def on_bar(self, bar: Bar) -> list[Fill]:
-        self._last_prices[(bar.exchange, bar.symbol)] = bar.close
+        key = (bar.exchange, bar.symbol)
+        self._last_prices[key] = bar.close
+        cached_ob = self._live_books.get(key)
+        if cached_ob is not None and cached_ob.exchange_ts_ms < bar.close_time_ms:
+            feed_ob = self._data_feed.get_orderbook(bar.exchange, bar.symbol, at_ts_ms=bar.close_time_ms)
+            if feed_ob is None or feed_ob.exchange_ts_ms < bar.close_time_ms:
+                self._live_books.pop(key, None)
         fills: list[Fill] = []
         spec = self._data_feed.get_symbol_spec(bar.exchange, bar.symbol, at_ts_ms=self._clock.now_ms())
         for cid in list(self._resting.keys()):

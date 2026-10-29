@@ -143,20 +143,21 @@ class _WallMsClock:
 
 def _default_perp_spec(symbol: str = "BTC/USDT:USDT", exchange: str = "binance") -> SymbolSpec:
     is_spot = ":" not in symbol
-    base_part = symbol.split("/")[0] if "/" in symbol else "BTC"
-    is_eth = base_part.upper() == "ETH"
+    base_part = (symbol.split("/")[0] if "/" in symbol else "BTC").upper()
+    is_alt = base_part in {"ETH", "SOL"}
+    is_sol = base_part == "SOL"
     return SymbolSpec(
         exchange=exchange,
         symbol=symbol,
         contract_type=ContractType.SPOT if is_spot else ContractType.PERPETUAL,
-        base_asset=base_part.upper(),
+        base_asset=base_part,
         quote_asset="USDT",
         margin_asset="USDT",
         contract_size=Decimal("1"),
-        tick_size=Decimal("0.01") if is_eth else Decimal("0.1"),
-        step_size=Decimal("0.001"),
-        min_qty=Decimal("0.001"),
-        max_qty=Decimal("1000"),
+        tick_size=Decimal("0.01") if is_alt else Decimal("0.1"),
+        step_size=Decimal("0.01") if is_sol else Decimal("0.001"),
+        min_qty=Decimal("0.01") if is_sol else Decimal("0.001"),
+        max_qty=Decimal("100000") if is_sol else Decimal("1000"),
         min_notional=Decimal("5"),
         max_leverage=Decimal("1") if is_spot else Decimal("50"),
         maker_fee=Decimal("0.0010") if is_spot else Decimal("0.0002"),
@@ -187,10 +188,13 @@ def _spec_to_summary(spec: SymbolSpec) -> SymbolSpecSummary:
 def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:USDT") -> list[Bar]:
     """Deterministic 180-bar (3h) multi-swing 1m OHLCV series with realistic bodies, wicks & volume."""
     base_ts = 1_700_000_000_000
-    is_eth = symbol.upper().startswith("ETH")
-    anchor = Decimal("3000.0") if is_eth else Decimal("50000.0")
-    unit = Decimal("1.0") if is_eth else Decimal("15.0")
-    tick = Decimal("0.1")
+    upper_sym = symbol.upper()
+    if upper_sym.startswith("ETH"):
+        anchor, unit, tick = Decimal("3000.0"), Decimal("1.0"), Decimal("0.01")
+    elif upper_sym.startswith("SOL"):
+        anchor, unit, tick = Decimal("140.0"), Decimal("0.12"), Decimal("0.01")
+    else:
+        anchor, unit, tick = Decimal("50000.0"), Decimal("15.0"), Decimal("0.1")
 
     # 6 multi-regime market waves (total 180 bars):
     # 1) Capitulation dip (24 bars) -> 2) Strong impulse rally (36 bars)
@@ -268,6 +272,98 @@ def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:US
         )
         prev_close = close_px
     return out
+
+
+def _delphi_multi_regime_1h_bars(exchange: str = "binance", symbol: str = "BTC/USDT:USDT") -> list[Bar]:
+    """
+    Deterministic 720-bar (30-day) 1H multi-regime crypto perpetual dataset covering:
+    Warm-up -> Bull Trend -> Parabolic Climax Top & Flush -> Choppy Bear with Short Squeezes -> Waterfall.
+    """
+    import random as _rng_mod
+
+    rng = _rng_mod.Random(20261030 + sum(ord(c) for c in symbol))
+    upper_sym = symbol.upper()
+    if upper_sym.startswith("ETH"):
+        price, vmult, tick = 3000.0, 1.32, Decimal("0.01")
+    elif upper_sym.startswith("SOL"):
+        price, vmult, tick = 140.0, 2.30, Decimal("0.01")
+    else:
+        price, vmult, tick = 60000.0, 1.00, Decimal("0.1")
+
+    base_ts = 1_704_067_200_000
+    out: list[Bar] = []
+    for h in range(720):
+        # Realistic 5-phase crypto cycle:
+        # 0..220: Steady Bull Trend (warms up multi-day EMA20/50 & builds uptrend)
+        # 220..330: Bull Expansion with healthy pullbacks & breakouts
+        # 330..395: Parabolic Climax Surge (> 3.5 ATR_D) -> Sharp Top Reversal Flush
+        # 395..585: Grinding Bear Market with periodic short-covering bounces
+        # 585..720: Waterfall Capitulation -> V-Bottom Recovery
+        if h < 220:
+            drift, vol = 0.0012 * vmult, 0.0052 * vmult
+        elif h < 330:
+            cyc = (h - 220) % 28
+            drift = (-0.0006 if 18 <= cyc < 24 else 0.0018) * vmult
+            vol = 0.0058 * vmult
+        elif h < 395:
+            drift = (0.0034 if h < 362 else -0.0055) * vmult
+            vol = 0.0095 * vmult
+        elif h < 585:
+            is_squeeze = (h % 18) == 11
+            drift = (0.0052 if is_squeeze else -0.0021) * vmult
+            vol = 0.0065 * vmult
+        else:
+            drift = (-0.0032 if h < 665 else 0.0028) * vmult
+            vol = 0.0088 * vmult
+
+        open_f = price
+        ret = drift + vol * rng.gauss(0.0, 0.75)
+        close_f = max(float(tick) * 10.0, open_f * (1.0 + ret))
+        hi_f = max(open_f, close_f) * (1.0 + abs(vol) * rng.uniform(0.18, 0.65))
+        lo_f = min(open_f, close_f) * (1.0 - abs(vol) * rng.uniform(0.18, 0.65))
+        vol_f = (850.0 / vmult) * (1.0 + 1.8 * abs(ret) / max(vol, 1e-6))
+
+        open_px = Decimal(str(open_f)).quantize(tick)
+        close_px = Decimal(str(close_f)).quantize(tick)
+        if close_px == open_px:
+            close_px = (open_px + tick).quantize(tick)
+        high_px = max(open_px, close_px, Decimal(str(hi_f)).quantize(tick))
+        low_px = min(open_px, close_px, max(tick, Decimal(str(lo_f)).quantize(tick)))
+        v_dec = Decimal(str(round(vol_f, 3)))
+        o_ts = base_ts + h * 3_600_000
+        c_ts = o_ts + 3_599_999
+
+        out.append(
+            Bar(
+                exchange=exchange,
+                symbol=symbol,
+                interval="1h",
+                open_time_ms=o_ts,
+                close_time_ms=c_ts,
+                open=open_px,
+                high=high_px,
+                low=low_px,
+                close=close_px,
+                volume=v_dec,
+                quote_volume=(close_px * v_dec).quantize(Decimal("0.01")),
+                trade_count=int(vol_f * 2),
+                is_closed=True,
+                exchange_ts_ms=c_ts,
+                local_recv_ts_ms=c_ts,
+            )
+        )
+        price = float(close_px)
+    return out
+
+
+def _resolve_bars_for_strategy(
+    exchange: str = "binance",
+    symbol: str = "BTC/USDT:USDT",
+    strategy_id: str = "",
+) -> list[Bar]:
+    if strategy_id.startswith("strat_delphi"):
+        return _delphi_multi_regime_1h_bars(exchange, symbol)
+    return _canonical_sample_bars(exchange, symbol)
 
 
 def _serialize_version(v: StrategyVersionRecord) -> StrategyVersionResponse:
@@ -434,6 +530,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         defaults = [
             _default_perp_spec("BTC/USDT:USDT", "binance"),
             _default_perp_spec("ETH/USDT:USDT", "binance"),
+            _default_perp_spec("SOL/USDT:USDT", "binance"),
             _default_perp_spec("BTC/USDT", "binance"),
             _default_perp_spec("ETH/USDT", "binance"),
         ]
@@ -1179,7 +1276,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 )
 
             cls = compile_strategy_class(ver.code)
-            bars = _canonical_sample_bars(req.exchange, req.symbol)
+            bars = _resolve_bars_for_strategy(req.exchange, req.symbol, req.strategy_id)
             spec = _default_perp_spec(req.symbol, req.exchange)
             init_usdt = to_strict_decimal(req.initial_usdt, "initial_usdt")
             lev = to_strict_decimal(req.leverage, "leverage")
@@ -1206,7 +1303,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 bt_clock = SimulatedClock(bars[0].open_time_ms)
                 bt_feed = HistoricalDataFeed(clock=bt_clock)
                 bt_feed.register_symbol_spec(spec)
-                bt_feed.load_bars(req.exchange, req.symbol, "1m", bars)
+                bt_feed.load_bars(req.exchange, req.symbol, bars[0].interval, bars)
 
                 if req.async_mode:
                     slip_cfg = SlippageModelConfig()
@@ -1287,7 +1384,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                                 w_clock = SimulatedClock(bars[0].open_time_ms)
                                 w_feed = HistoricalDataFeed(clock=w_clock)
                                 w_feed.register_symbol_spec(spec)
-                                w_feed.load_bars(ex_name, sym_name, "1m", bars)
+                                w_feed.load_bars(ex_name, sym_name, bars[0].interval, bars)
                                 w_engine = BacktestEngine(
                                     db_session=bg_session,
                                     clock=w_clock,
@@ -1756,7 +1853,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             ex = exchanges[0]
             sym = symbols[0]
             spec = _default_perp_spec(sym, ex)
-            raw_bars = _canonical_sample_bars(ex, sym)
+            raw_bars = _resolve_bars_for_strategy(ex, sym, row.strategy_id)
 
             fills = list(
                 session.execute(
@@ -1940,7 +2037,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             cfg_snap = row.config_snapshot_json or {}
             ex = (cfg_snap.get("exchanges") or ["binance"])[0]
             sym = (cfg_snap.get("symbols") or ["BTC/USDT:USDT"])[0]
-            bars = _canonical_sample_bars(ex, sym)
+            bars = _resolve_bars_for_strategy(ex, sym, row.strategy_id)
             spec = _default_perp_spec(sym, ex)
             base_cfg = StrategyConfig(
                 strategy_id=row.strategy_id,
@@ -1990,7 +2087,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             cfg_snap = row.config_snapshot_json or {}
             ex = (cfg_snap.get("exchanges") or ["binance"])[0]
             sym = (cfg_snap.get("symbols") or ["BTC/USDT:USDT"])[0]
-            bars = _canonical_sample_bars(ex, sym)
+            bars = _resolve_bars_for_strategy(ex, sym, row.strategy_id)
             spec = _default_perp_spec(sym, ex)
             base_cfg = StrategyConfig(
                 strategy_id=row.strategy_id,
