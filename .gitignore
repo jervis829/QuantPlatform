@@ -24,6 +24,7 @@ frontend/tsconfig.tsbuildinfo
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3-*
 logs/
 backups/
 Unselected files/
