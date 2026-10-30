@@ -82,6 +82,7 @@ def convert_intent_to_order_request(
             time_in_force=intent.time_in_force,
             quantity=qty,
             price=intent.limit_price,
+            stop_price=intent.stop_price,
             post_only=intent.post_only,
             reduce_only=reduce_only,
             leverage=config.default_leverage,

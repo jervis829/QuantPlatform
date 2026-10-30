@@ -963,3 +963,97 @@ def test_acceptance2_and_acceptance3_fixed_strategy_exact_hand_calc_and_lookahea
             "    def on_bar(self, bar):\n"
             "        return s.shift(-1)\n"
         )
+
+
+def test_stop_market_causal_trigger_fill_price(db_session: Session) -> None:
+    """
+    Verify STOP_MARKET fills causally at stop_price (or gap open), never receiving a lookahead
+    favorable bar.close fill after an intrabar stop-hunting wick!
+    """
+    t0 = 1_700_000_000_000
+    spec = _perp_spec()
+    clock = SimulatedClock(t0)
+    feed = HistoricalDataFeed(clock)
+    feed.register_symbol_spec(spec)
+    b1 = Bar(
+        exchange="binance",
+        symbol="BTC/USDT:USDT",
+        interval="1h",
+        open_time_ms=t0,
+        close_time_ms=t0 + 3_599_999,
+        open=Decimal("50000.0"),
+        high=Decimal("50100.0"),
+        low=Decimal("49900.0"),
+        close=Decimal("50000.0"),
+        volume=Decimal("100"),
+        quote_volume=Decimal("5000000"),
+        trade_count=200,
+        is_closed=True,
+        exchange_ts_ms=t0 + 3_599_999,
+        local_recv_ts_ms=t0 + 3_599_999,
+    )
+    # Bar 2 wicks up to 50250 (triggering short stop at 50200), then dumps to close at 49200!
+    b2 = Bar(
+        exchange="binance",
+        symbol="BTC/USDT:USDT",
+        interval="1h",
+        open_time_ms=t0 + 3_600_000,
+        close_time_ms=t0 + 7_199_999,
+        open=Decimal("50000.0"),
+        high=Decimal("50250.0"),
+        low=Decimal("49100.0"),
+        close=Decimal("49200.0"),
+        volume=Decimal("150"),
+        quote_volume=Decimal("7400000"),
+        trade_count=300,
+        is_closed=True,
+        exchange_ts_ms=t0 + 7_199_999,
+        local_recv_ts_ms=t0 + 7_199_999,
+    )
+    feed.load_bars("binance", "BTC/USDT:USDT", "1h", [b1, b2])
+
+    broker = BacktestBroker(
+        env=RunEnv.BACKTEST,
+        run_id="run_stop_mkt",
+        strategy_id="s_stop_mkt",
+        clock=clock,
+        data_feed=feed,
+        ledger=UnifiedLedgerRepository(db_session),
+        initial_balances={"USDT": Decimal("100000")},
+    )
+    broker.startup_sync()
+
+    clock.advance_to(b1.close_time_ms)
+    broker.on_bar(b1)
+    open_short = broker.submit_order(
+        OrderRequest(
+            exchange="binance",
+            symbol="BTC/USDT:USDT",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=Decimal("1.000"),
+            created_ts_ms=b1.close_time_ms,
+        )
+    )
+    assert open_short.status == OrderStatus.FILLED
+    assert open_short.avg_fill_price == Decimal("50000.0")
+
+    # Place resting STOP_MARKET BUY @ 50200.0 -> triggers on b2 upper wick at 50200.0, NOT 49200.0!
+    rest_stop = broker.submit_order(
+        OrderRequest(
+            exchange="binance",
+            symbol="BTC/USDT:USDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.STOP_MARKET,
+            stop_price=Decimal("50200.0"),
+            quantity=Decimal("1.000"),
+            reduce_only=True,
+            created_ts_ms=b1.close_time_ms,
+        )
+    )
+    assert rest_stop.status == OrderStatus.NEW
+    clock.advance_to(b2.close_time_ms)
+    fills = broker.on_bar(b2)
+    assert len(fills) == 1
+    assert fills[0].price == Decimal("50200.0")
+

@@ -19,6 +19,7 @@ from quant_platform.backtest.matching import (
 from quant_platform.backtest.report import build_and_persist_backtest_report, compute_return_series_metrics
 from quant_platform.backtest.research import (
     compute_parameter_sensitivity_heatmap,
+    periods_per_year_for_interval,
     run_walk_forward_analysis,
     split_bars_in_out_sample,
 )

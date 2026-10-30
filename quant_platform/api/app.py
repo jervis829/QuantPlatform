@@ -79,6 +79,7 @@ from quant_platform.backtest import (
     BacktestEngine,
     build_and_persist_backtest_report,
     compute_parameter_sensitivity_heatmap,
+    periods_per_year_for_interval,
     run_walk_forward_analysis,
 )
 from quant_platform.core.decimal_utils import ZERO, format_decimal, to_strict_decimal
@@ -274,54 +275,109 @@ def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:US
     return out
 
 
+_DELPHI_BARS_CACHE: dict[tuple[str, str], list[Bar]] = {}
+
+
 def _delphi_multi_regime_1h_bars(exchange: str = "binance", symbol: str = "BTC/USDT:USDT") -> list[Bar]:
     """
-    Deterministic 720-bar (30-day) 1H multi-regime crypto perpetual dataset covering:
-    Warm-up -> Bull Trend -> Parabolic Climax Top & Flush -> Choppy Bear with Short Squeezes -> Waterfall.
+    Deterministic 3,360-bar (140 UTC days = 50-day 24H Daily EMA50/ATR14 warm-up +
+    90 full days / 3.0 months active evaluation) 1H multi-regime crypto perpetual dataset:
+      - Days 0..49: 50-day 24H daily indicator warm-up
+      - Days 50..63: Multi-wave bull trend with intra-trend pullbacks
+      - Days 64..71: Choppy range with bull-trap false breakouts
+      - Days 72..78: Parabolic climax surge (> 3.8..8.5 ATR_D) & high-altitude distribution traps
+      - Days 79..83: Sharp climax top reversal flush
+      - Days 84..91: EMA20/EMA50 entanglement whipsaw chop
+      - Days 92..110: Bear grinding trend with periodic violent short-covering squeezes
+      - Days 111..120: Second-leg bear capitulation waterfall & deep oversold exhaustion traps
+      - Days 121..139: V-bottom accumulation & fresh multi-wave bull recovery
     """
+    cache_key = (exchange, symbol)
+    cached = _DELPHI_BARS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     import random as _rng_mod
 
     rng = _rng_mod.Random(20261030 + sum(ord(c) for c in symbol))
     upper_sym = symbol.upper()
     if upper_sym.startswith("ETH"):
-        price, vmult, tick = 3000.0, 1.32, Decimal("0.01")
+        price, beta, vmult, tick = 3000.0, 1.18, 1.32, Decimal("0.01")
     elif upper_sym.startswith("SOL"):
-        price, vmult, tick = 140.0, 2.30, Decimal("0.01")
+        price, beta, vmult, tick = 140.0, 1.38, 1.85, Decimal("0.01")
     else:
-        price, vmult, tick = 60000.0, 1.00, Decimal("0.1")
+        price, beta, vmult, tick = 60000.0, 1.00, 1.00, Decimal("0.1")
 
     base_ts = 1_704_067_200_000
     out: list[Bar] = []
-    for h in range(720):
-        # Realistic 5-phase crypto cycle:
-        # 0..220: Steady Bull Trend (warms up multi-day EMA20/50 & builds uptrend)
-        # 220..330: Bull Expansion with healthy pullbacks & breakouts
-        # 330..395: Parabolic Climax Surge (> 3.5 ATR_D) -> Sharp Top Reversal Flush
-        # 395..585: Grinding Bear Market with periodic short-covering bounces
-        # 585..720: Waterfall Capitulation -> V-Bottom Recovery
-        if h < 220:
-            drift, vol = 0.0012 * vmult, 0.0052 * vmult
-        elif h < 330:
-            cyc = (h - 220) % 28
-            drift = (-0.0006 if 18 <= cyc < 24 else 0.0018) * vmult
-            vol = 0.0058 * vmult
-        elif h < 395:
-            drift = (0.0034 if h < 362 else -0.0055) * vmult
-            vol = 0.0095 * vmult
-        elif h < 585:
-            is_squeeze = (h % 18) == 11
-            drift = (0.0052 if is_squeeze else -0.0021) * vmult
-            vol = 0.0065 * vmult
+    tick_f = float(tick)
+    for h in range(140 * 24):
+        d = h // 24
+        hr = h % 24
+        if d < 25:
+            drift, vol = 0.00012, 0.0058
+        elif d < 50:
+            drift = -0.00060 if (d % 6) in (4, 5) else 0.00062
+            vol = 0.0062
+        elif d < 64:
+            cyc = (d - 50) % 5
+            drift = -0.00095 if cyc == 3 else (0.00135 if cyc in (0, 1, 2) else 0.00025)
+            vol = 0.0070
+        elif d < 72:
+            if hr in (5, 6, 7) and (d % 2 == 0):
+                drift = 0.0036
+            elif hr in (8, 9, 10, 11) and (d % 2 == 0):
+                drift = -0.0031
+            else:
+                drift = 0.00010 if (d % 2 == 0) else -0.00020
+            vol = 0.0078
+        elif d < 79:
+            if d < 75:
+                drift = 0.00245
+            else:
+                drift = 0.00320 if hr < 5 else (-0.00180 if hr < 14 else 0.00010)
+            vol = 0.0108
+        elif d < 84:
+            drift = -0.00310
+            vol = 0.0112
+        elif d < 92:
+            drift = 0.00085 if (h // 16) % 2 == 0 else -0.00090
+            vol = 0.0072
+        elif d < 111:
+            cyc = (d - 92) % 4
+            if cyc == 2 and 8 <= hr < 13:
+                drift = 0.0046
+            elif cyc == 2 and 13 <= hr < 19:
+                drift = -0.0030
+            else:
+                drift = -0.00105
+            vol = 0.0078
+        elif d < 121:
+            if d < 118:
+                drift = 0.0040 if ((d in (113, 116)) and 9 <= hr < 13) else -0.00215
+            else:
+                drift = -0.0030 if hr < 5 else (0.0022 if hr < 14 else -0.0002)
+            vol = 0.0098
+        elif d < 127:
+            drift = 0.00130 if d >= 123 else 0.00025
+            vol = 0.0082
         else:
-            drift = (-0.0032 if h < 665 else 0.0028) * vmult
-            vol = 0.0088 * vmult
+            cyc = (d - 127) % 5
+            drift = -0.00085 if cyc == 3 else 0.00140
+            vol = 0.0072
 
+        eff_drift = drift * beta
+        eff_vol = vol * vmult
         open_f = price
-        ret = drift + vol * rng.gauss(0.0, 0.75)
-        close_f = max(float(tick) * 10.0, open_f * (1.0 + ret))
-        hi_f = max(open_f, close_f) * (1.0 + abs(vol) * rng.uniform(0.18, 0.65))
-        lo_f = min(open_f, close_f) * (1.0 - abs(vol) * rng.uniform(0.18, 0.65))
-        vol_f = (850.0 / vmult) * (1.0 + 1.8 * abs(ret) / max(vol, 1e-6))
+        ret = eff_drift + eff_vol * rng.gauss(0.0, 0.85)
+        close_f = max(tick_f * 20.0, round(open_f * (1.0 + ret) / tick_f) * tick_f)
+        if close_f == open_f:
+            close_f = round((open_f + tick_f) / tick_f) * tick_f
+        hi_mult = rng.uniform(0.35, 1.25) if eff_drift < 0 else rng.uniform(0.20, 0.85)
+        lo_mult = rng.uniform(0.35, 1.15) if eff_drift > 0 else rng.uniform(0.20, 0.85)
+        hi_f = max(open_f, close_f, round(max(open_f, close_f) * (1.0 + eff_vol * hi_mult) / tick_f) * tick_f)
+        lo_f = min(open_f, close_f, max(tick_f, round(min(open_f, close_f) * (1.0 - eff_vol * lo_mult) / tick_f) * tick_f))
+        vol_f = (850.0 / vmult) * (1.0 + 1.8 * abs(ret) / max(eff_vol, 1e-6))
 
         open_px = Decimal(str(open_f)).quantize(tick)
         close_px = Decimal(str(close_f)).quantize(tick)
@@ -353,6 +409,7 @@ def _delphi_multi_regime_1h_bars(exchange: str = "binance", symbol: str = "BTC/U
             )
         )
         price = float(close_px)
+    _DELPHI_BARS_CACHE[cache_key] = out
     return out
 
 
@@ -1434,7 +1491,10 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                                 res = w_engine.run(progress_callback=_on_prog, cancel_check=_check_cancel)
                                 if res.run_record.status == RunStatus.COMPLETED:
                                     build_and_persist_backtest_report(
-                                        db_session=bg_session, result=res, benchmark_bars=bars
+                                        db_session=bg_session,
+                                        result=res,
+                                        benchmark_bars=bars,
+                                        periods_per_year=periods_per_year_for_interval(bars[0].interval),
                                     )
                                 bg_session.commit()
                                 return res.run_record.status.value, res.run_record.error_message
@@ -1545,7 +1605,12 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                     )
 
                 bt_res = bt_engine.run(progress_callback=_sync_prog)
-                build_and_persist_backtest_report(db_session=session, result=bt_res, benchmark_bars=bars)
+                build_and_persist_backtest_report(
+                    db_session=session,
+                    result=bt_res,
+                    benchmark_bars=bars,
+                    periods_per_year=periods_per_year_for_interval(bars[0].interval),
+                )
                 run_rec = bt_res.run_record
                 app.state.run_progress[run_rec.run_id] = {
                     "run_id": run_rec.run_id,
@@ -1719,7 +1784,14 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail=f"Run {env}:{run_id} not found")
-            total_bars = int(live_prog["total_bars"]) if live_prog and "total_bars" in live_prog else len(_canonical_sample_bars())
+            cfg_s = row.config_snapshot_json or {}
+            ex_s = (cfg_s.get("exchanges") or ["binance"])[0]
+            sym_s = (cfg_s.get("symbols") or ["BTC/USDT:USDT"])[0]
+            total_bars = (
+                int(live_prog["total_bars"])
+                if live_prog and "total_bars" in live_prog
+                else len(_resolve_bars_for_strategy(ex_s, sym_s, row.strategy_id))
+            )
             if row.status == "COMPLETED":
                 done_bars = total_bars
                 pct = 100.0
@@ -1788,7 +1860,10 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 )
                 session.commit()
             live_prog = app.state.run_progress.get(run_id, {})
-            total_bars = int(live_prog.get("total_bars", len(_canonical_sample_bars())))
+            cfg_c = row.config_snapshot_json or {}
+            ex_c = (cfg_c.get("exchanges") or ["binance"])[0]
+            sym_c = (cfg_c.get("symbols") or ["BTC/USDT:USDT"])[0]
+            total_bars = int(live_prog.get("total_bars", len(_resolve_bars_for_strategy(ex_c, sym_c, row.strategy_id))))
             done_bars = total_bars if row.status == "COMPLETED" else int(live_prog.get("processed_bars", 0))
             pct = 100.0 if row.status == "COMPLETED" else float(live_prog.get("progress_pct", 0.0))
             resp_obj = RunStatusResponse(

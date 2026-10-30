@@ -16,7 +16,7 @@ from quant_platform.backtest.margin import (
     should_liquidate_at_mark_price,
 )
 from quant_platform.backtest.matching import SlippageModelConfig, walk_orderbook_levels
-from quant_platform.core.decimal_utils import ONE, ZERO
+from quant_platform.core.decimal_utils import ONE, ZERO, quantize_to_step
 from quant_platform.core.enums import (
     ContractType,
     LiquidityRole,
@@ -115,6 +115,7 @@ class BacktestBroker(BrokerAdapter):
         self._live_books: dict[tuple[str, str], OrderBookSnapshot] = {}
         self._mark_prices: dict[tuple[str, str], Decimal] = {}
         self._last_prices: dict[tuple[str, str], Decimal] = {}
+        self._last_bars: dict[tuple[str, str], Bar] = {}
 
         self._cumulative_fees = ZERO
         self._cumulative_funding = ZERO
@@ -299,7 +300,53 @@ class BacktestBroker(BrokerAdapter):
                 self._emit_order_update(expired_fok)
                 return expired_fok
 
-        # 5. Immediate matching against opposite orderbook levels (walk the book)
+        # 5. Immediate matching: STOP_MARKET trigger check or MARKET/crossable LIMIT walk-the-book
+        if validated.order_type == OrderType.STOP_MARKET and validated.stop_price is not None:
+            last_bar = self._last_bars.get((validated.exchange, validated.symbol))
+            ref_now = self._reference_price(validated.exchange, validated.symbol)
+            stop_px = validated.stop_price
+            triggered_px: Decimal | None = None
+            if validated.side == OrderSide.SELL:
+                if last_bar is not None and last_bar.close_time_ms == now and last_bar.low <= stop_px:
+                    triggered_px = min(last_bar.open, stop_px)
+                elif ref_now is not None and ref_now <= stop_px:
+                    triggered_px = min(ref_now, stop_px)
+            else:
+                if last_bar is not None and last_bar.close_time_ms == now and last_bar.high >= stop_px:
+                    triggered_px = max(last_bar.open, stop_px)
+                elif ref_now is not None and ref_now >= stop_px:
+                    triggered_px = max(ref_now, stop_px)
+
+            if triggered_px is not None:
+                from decimal import ROUND_DOWN, ROUND_UP
+
+                imp = self.slippage_config.extra_impact_bps / Decimal("10000")
+                raw_fill = triggered_px * (ONE - imp if validated.side == OrderSide.SELL else ONE + imp)
+                fill_px = quantize_to_step(
+                    raw_fill,
+                    spec.tick_size,
+                    rounding=ROUND_DOWN if validated.side == OrderSide.SELL else ROUND_UP,
+                )
+                if fill_px <= ZERO:
+                    fill_px = spec.tick_size
+                order = self._apply_fill_to_order_and_portfolio(
+                    order=order,
+                    spec=spec,
+                    fill_price=fill_px,
+                    fill_qty=validated.quantity,
+                    reference_price=triggered_px,
+                    slippage_bps=self.slippage_config.extra_impact_bps,
+                    liquidity=LiquidityRole.TAKER,
+                    snapshot_ref=f"stop:{now}",
+                    ts_ms=now,
+                )
+                self._emit_order_update(order)
+                return order
+
+            self._resting[order.client_order_id] = _RestingOrderEntry(order=order, queue_ahead_qty=ZERO)
+            self._emit_order_update(order)
+            return order
+
         can_cross = validated.order_type == OrderType.MARKET or (
             validated.order_type == OrderType.LIMIT
             and validated.price is not None
@@ -528,6 +575,27 @@ class BacktestBroker(BrokerAdapter):
             ord_obj = entry.order
             if ord_obj.exchange != tick.exchange or ord_obj.symbol != tick.symbol:
                 continue
+            if ord_obj.order_type == OrderType.STOP_MARKET and ord_obj.stop_price is not None:
+                stop_hit = (ord_obj.side == OrderSide.SELL and tick.price <= ord_obj.stop_price) or (
+                    ord_obj.side == OrderSide.BUY and tick.price >= ord_obj.stop_price
+                )
+                if stop_hit:
+                    ord_updated = self._apply_fill_to_order_and_portfolio(
+                        order=ord_obj,
+                        spec=spec,
+                        fill_price=tick.price,
+                        fill_qty=ord_obj.remaining_qty,
+                        reference_price=ord_obj.stop_price,
+                        slippage_bps=ZERO,
+                        liquidity=LiquidityRole.TAKER,
+                        snapshot_ref=f"tick:{tick.trade_id}",
+                        ts_ms=tick.exchange_ts_ms,
+                    )
+                    entry.order = ord_updated
+                    self._emit_order_update(ord_updated)
+                    fills.append(self._last_emitted_fill)
+                    self._resting.pop(cid, None)
+                continue
             assert ord_obj.price is not None
 
             crossed_through = (ord_obj.side == OrderSide.BUY and tick.price < ord_obj.price) or (
@@ -564,6 +632,7 @@ class BacktestBroker(BrokerAdapter):
     def on_bar(self, bar: Bar) -> list[Fill]:
         key = (bar.exchange, bar.symbol)
         self._last_prices[key] = bar.close
+        self._last_bars[key] = bar
         cached_ob = self._live_books.get(key)
         if cached_ob is not None and cached_ob.exchange_ts_ms < bar.close_time_ms:
             feed_ob = self._data_feed.get_orderbook(bar.exchange, bar.symbol, at_ts_ms=bar.close_time_ms)
@@ -577,6 +646,41 @@ class BacktestBroker(BrokerAdapter):
                 continue
             ord_obj = entry.order
             if ord_obj.exchange != bar.exchange or ord_obj.symbol != bar.symbol:
+                continue
+            if ord_obj.order_type == OrderType.STOP_MARKET and ord_obj.stop_price is not None:
+                stop_hit = (ord_obj.side == OrderSide.SELL and bar.low <= ord_obj.stop_price) or (
+                    ord_obj.side == OrderSide.BUY and bar.high >= ord_obj.stop_price
+                )
+                if stop_hit:
+                    from decimal import ROUND_DOWN, ROUND_UP
+
+                    trig_px = (
+                        min(bar.open, ord_obj.stop_price)
+                        if ord_obj.side == OrderSide.SELL
+                        else max(bar.open, ord_obj.stop_price)
+                    )
+                    imp = self.slippage_config.extra_impact_bps / Decimal("10000")
+                    raw_fill = trig_px * (ONE - imp if ord_obj.side == OrderSide.SELL else ONE + imp)
+                    fill_px = quantize_to_step(
+                        raw_fill,
+                        spec.tick_size,
+                        rounding=ROUND_DOWN if ord_obj.side == OrderSide.SELL else ROUND_UP,
+                    )
+                    ord_updated = self._apply_fill_to_order_and_portfolio(
+                        order=ord_obj,
+                        spec=spec,
+                        fill_price=fill_px,
+                        fill_qty=ord_obj.remaining_qty,
+                        reference_price=trig_px,
+                        slippage_bps=self.slippage_config.extra_impact_bps,
+                        liquidity=LiquidityRole.TAKER,
+                        snapshot_ref=f"bar:{bar.open_time_ms}",
+                        ts_ms=bar.close_time_ms,
+                    )
+                    entry.order = ord_updated
+                    self._emit_order_update(ord_updated)
+                    fills.append(self._last_emitted_fill)
+                    self._resting.pop(cid, None)
                 continue
             assert ord_obj.price is not None
             crossed = (ord_obj.side == OrderSide.BUY and bar.low < ord_obj.price) or (

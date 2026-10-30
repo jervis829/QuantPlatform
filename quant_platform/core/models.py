@@ -382,6 +382,7 @@ class Signal(DomainModel):
     action: SignalAction
     quantity: StrictDecimal
     limit_price: StrictDecimal | None = None
+    stop_price: StrictDecimal | None = None
     order_type: OrderType = OrderType.MARKET
     time_in_force: TimeInForce = TimeInForce.GTC
     post_only: bool = False

@@ -327,7 +327,9 @@ class DelphiParams:
     name: str = "Delphi_v4.4_Baseline"
     # Entry filters
     min_dist_atr_d: float = 1.0
-    max_dist_atr_d: float | None = None  # None in v4.4; 3.5 in v4.5!
+    soft_dist_atr_d: float | None = None  # Tiered corridor threshold in v4.6!
+    max_dist_atr_d: float | None = None  # None in v4.4; 3.5 in v4.5; 8.5 in v4.6!
+    extended_size_mult: float = 1.0  # 0.60 in v4.6 for [soft_dist_atr_d, max_dist_atr_d)
     channel_lookback_1h: int = 15
     channel_atr_mult: float = 0.45
     poll_intrabar_1m: bool = False  # True tests 1m live polling repainting trap
@@ -716,16 +718,21 @@ def run_delphi_simulation(
                 continue
 
             entry_px = raw_px * (1.0 + slip) if side == "LONG" else raw_px * (1.0 - slip)
+            zone_mult = (
+                params.extended_size_mult
+                if (params.soft_dist_atr_d is not None and dist_atr_d >= params.soft_dist_atr_d)
+                else 1.0
+            )
             if params.sizing_mode == "equal_notional":
-                notional = eq_now * params.notional_frac_per_slot
+                notional = eq_now * params.notional_frac_per_slot * zone_mult
                 qty = notional / entry_px
             else:
-                # ATR Volatility Risk Parity: 3.5 * ATR_1H * qty = equity * risk_pct
-                risk_budget = eq_now * params.risk_pct_per_trade
+                # ATR Volatility Risk Parity: 3.5 * ATR_1H * qty = equity * risk_pct * zone_mult
+                risk_budget = eq_now * params.risk_pct_per_trade * zone_mult
                 stop_dist = params.init_stop_atr * entry_atr
                 qty = risk_budget / max(stop_dist, 1e-8)
-                # Cap single position notional at 90% of equity (max 1.8x across 2 slots)
-                max_qty = (eq_now * 0.90) / entry_px
+                # Cap single position notional at 85% * zone_mult of equity
+                max_qty = (eq_now * 0.85 * zone_mult) / entry_px
                 qty = min(qty, max_qty)
                 notional = qty * entry_px
 
@@ -860,6 +867,24 @@ def main() -> None:
 
     res_v44 = run_delphi_simulation(universe, precomp, v44_params)
     res_v45 = run_delphi_simulation(universe, precomp, v45_params)
+
+    v46_params = DelphiParams(
+        name="Delphi_II_v4.6_Tiered_AntiMiss",
+        min_dist_atr_d=1.0,
+        soft_dist_atr_d=3.8,
+        max_dist_atr_d=8.5,
+        extended_size_mult=0.60,
+        short_trail_atr=1.8,
+        long_trail_atr=2.0,
+        two_stage_breakeven=False,
+        lock_entry_atr=True,
+        enable_daily_reversal_exit=True,
+        max_stagnant_hours=30,
+        sizing_mode="atr_risk_parity",
+        risk_pct_per_trade=0.042,
+        rank_candidates_by_strength=True,
+    )
+    res_v46 = run_delphi_simulation(universe, precomp, v46_params)
 
     # 2. Short Trailing Stop Sensitivity Sweep (0.3 .. 2.5 ATR)
     short_sweep = []
@@ -1018,6 +1043,11 @@ def main() -> None:
             "v45": {
                 k: v
                 for k, v in res_v45.__dict__.items()
+                if k not in ("trades", "equity_curve_daily")
+            },
+            "v46": {
+                k: v
+                for k, v in res_v46.__dict__.items()
                 if k not in ("trades", "equity_curve_daily")
             },
         },

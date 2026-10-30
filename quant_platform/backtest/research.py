@@ -13,6 +13,16 @@ from quant_platform.core.models import Bar, StrategyConfig, SymbolSpec
 from quant_platform.data import HistoricalDataFeed, SimulatedClock
 
 
+def periods_per_year_for_interval(interval: str) -> int:
+    mapping = {
+        "1d": 365,
+        "4h": 365 * 6,
+        "1h": 365 * 24,
+        "15m": 365 * 96,
+    }
+    return mapping.get(interval, 365)
+
+
 def split_bars_in_out_sample(bars: list[Bar], in_sample_ratio: float = 0.7) -> tuple[list[Bar], list[Bar]]:
     """Chronological non-overlapping In-Sample / Out-Of-Sample split."""
     if not (0.1 <= in_sample_ratio <= 0.95):
@@ -87,7 +97,10 @@ def run_walk_forward_analysis(
                 config=cfg_train,
                 slice_tag=f"wf_train_{win_idx}_{c_idx}",
             )
-            m = compute_return_series_metrics(res_train.equity_curve)
+            m = compute_return_series_metrics(
+                res_train.equity_curve,
+                periods_per_year=periods_per_year_for_interval(train_bars[0].interval),
+            )
             score = m["sharpe"] if m["sharpe"] != 0.0 else m["cumulative_return"]
             if score > best_score:
                 best_score = score
@@ -105,7 +118,10 @@ def run_walk_forward_analysis(
             config=cfg_oos,
             slice_tag=f"wf_oos_{win_idx}",
         )
-        oos_metrics = compute_return_series_metrics(res_oos.equity_curve)
+        oos_metrics = compute_return_series_metrics(
+            res_oos.equity_curve,
+            periods_per_year=periods_per_year_for_interval(test_bars[0].interval),
+        )
         windows.append(
             {
                 "window_index": win_idx,
@@ -157,7 +173,10 @@ def compute_parameter_sensitivity_heatmap(
                 config=cfg,
                 slice_tag=f"hm_{x_val}_{y_val}",
             )
-            m = compute_return_series_metrics(res.equity_curve)
+            m = compute_return_series_metrics(
+                res.equity_curve,
+                periods_per_year=periods_per_year_for_interval(bars[0].interval),
+            )
             cells.append(
                 {
                     "x": x_val,
