@@ -426,7 +426,11 @@ def build_and_persist_backtest_report(
                 "cumulative_fees": format_decimal(pt.cumulative_fees),
                 "cumulative_funding": format_decimal(pt.cumulative_funding),
             }
-            for pt in result.equity_curve
+            for idx_pt, pt in enumerate(result.equity_curve)
+            if len(result.equity_curve) <= 1500
+            or idx_pt == 0
+            or idx_pt == len(result.equity_curve) - 1
+            or idx_pt % max(1, len(result.equity_curve) // 1000) == 0
         ],
     }
 

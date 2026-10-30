@@ -34,7 +34,13 @@ class DelphiParams(BaseModel):
     init_stop_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="初始硬止损距离（1H ATR倍数）")
     trail_activate_atr: Decimal = ui_param(Decimal("3.5"), ui_group="risk_sizing", unit="ATR_1H", description="移动止损激活浮盈阈值（1H ATR倍数）")
     long_trail_atr: Decimal = ui_param(Decimal("8.0"), ui_group="risk_sizing", unit="ATR_1H", description="多单吊灯移动止损回撤距离（v4.4=2.0易被洗出，v4.6=8.0吃满周线主升浪）")
-    short_trail_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="空单吊灯移动止损回撤距离（v4.4=0.5，v4.6=5.0抗熊市反抽）")
+    short_trail_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="空单吊灯移动止损回撤距离（v4.4=0.5，v4.6=5.0，v4.7=5.4抗熊市反抽）")
+    short_trail_activate_atr: Decimal = ui_param(Decimal("0.0"), ui_group="risk_sizing", unit="ATR_1H", description="空单独立跟踪激活阈值（0表示沿用trail_activate_atr，v4.7=4.0避免破位初段过早下移止损）")
+    short_close_anchor: bool = ui_param(False, ui_group="execution", description="空单以1H收盘最低价锚定浮盈（防止急跌长下影线针尖虚拉止损线）")
+    short_close_confirm_trail: bool = ui_param(False, ui_group="execution", description="空单跟踪止盈要求1H实体收盘确认（保留盘中硬防爆止损，免疫逼空上影线扫损洗盘）")
+    short_tp1_enable: bool = ui_param(False, ui_group="execution", description="启用空单首档脉冲分批止盈（急跌达标先落袋部分仓位，底仓博二段主跌浪）")
+    short_tp1_atr: Decimal = ui_param(Decimal("4.5"), ui_group="execution", unit="ATR_1H", description="空单首档脉冲止盈触发距离（1H ATR倍数）")
+    short_tp1_fraction: Decimal = ui_param(Decimal("0.30"), ui_group="execution", unit="Ratio", description="空单首档脉冲分批止盈平仓比例")
     lock_entry_atr: bool = ui_param(True, ui_group="execution", description="锁定开仓ATR下限（防止横盘缩量时止损距离被动收紧）")
     enable_reversal_exit: bool = ui_param(True, ui_group="execution", description="启用日线EMA20/EMA50共振趋势反转主动平仓")
     enable_stagnation_exit: bool = ui_param(False, ui_group="execution", description="启用30根K线动能停滞离场")
@@ -60,8 +66,11 @@ class DelphiStrategy(Strategy):
         self._entry_atr = Decimal("0")
         self._entry_bar_idx = 0
         self._stop_px = Decimal("0")
+        self._trail_px = Decimal("0")
         self._highest = Decimal("0")
         self._lowest = Decimal("0")
+        self._lowest_close = Decimal("0")
+        self._tp1_done = False
         self._trade_start_ms = 1704067200000  # 2024-01-01 00:00:00 UTC after 2023 Q4 warm-up
         return None
 
@@ -165,11 +174,27 @@ class DelphiStrategy(Strategy):
                         ts_ms=self.ctx.now_ms,
                     )
                 ]
+            if (not is_long) and self.params.short_close_confirm_trail and bar.close >= self._trail_px:
+                return [
+                    Signal(
+                        strategy_id=self.ctx.config.strategy_id,
+                        exchange=bar.exchange,
+                        symbol=bar.symbol,
+                        action=SignalAction.CLOSE,
+                        order_type=OrderType.MARKET,
+                        quantity=abs(pos_qty),
+                        reduce_only=True,
+                        reason="delphi_short_close_trail_exit",
+                        ts_ms=self.ctx.now_ms,
+                    )
+                ]
 
             if bar.high > self._highest:
                 self._highest = bar.high
             if bar.low < self._lowest:
                 self._lowest = bar.low
+            if bar.close < self._lowest_close:
+                self._lowest_close = bar.close
 
             if self.params.enable_reversal_exit:
                 if is_long and last_d_close < ema50_d and ema20_d < ema50_d:
@@ -227,11 +252,52 @@ class DelphiStrategy(Strategy):
                     if cand > self._stop_px:
                         self._stop_px = cand
             else:
-                gain_atr = (self._entry_px - self._lowest) / self._entry_atr
-                if gain_atr >= self.params.trail_activate_atr:
-                    cand = self._lowest + self.params.short_trail_atr * eff_atr
-                    if cand < self._stop_px:
-                        self._stop_px = cand
+                s_act = (
+                    self.params.short_trail_activate_atr
+                    if self.params.short_trail_activate_atr > Decimal("0")
+                    else self.params.trail_activate_atr
+                )
+                ref_low = self._lowest_close if self.params.short_close_anchor else self._lowest
+                gain_atr = (self._entry_px - ref_low) / self._entry_atr
+                if gain_atr >= s_act:
+                    cand = ref_low + self.params.short_trail_atr * eff_atr
+                    if self.params.short_close_confirm_trail:
+                        if cand < self._trail_px:
+                            self._trail_px = cand
+                    else:
+                        if cand < self._stop_px:
+                            self._stop_px = cand
+
+                if self.params.short_tp1_enable and (not self._tp1_done):
+                    tp1_px = self._entry_px - self.params.short_tp1_atr * self._entry_atr
+                    if bar.close <= tp1_px:
+                        part_qty = (abs(pos_qty) * self.params.short_tp1_fraction).quantize(step_q, rounding=ROUND_DOWN)
+                        rem_qty = abs(pos_qty) - part_qty
+                        if part_qty >= spec.min_qty and rem_qty >= spec.min_qty:
+                            self._tp1_done = True
+                            be_px = self._entry_px - Decimal("0.15") * self._entry_atr
+                            if self.params.short_close_confirm_trail:
+                                if be_px < self._trail_px:
+                                    self._trail_px = be_px
+                                soft_hard = self._entry_px + Decimal("2.0") * self._entry_atr
+                                if soft_hard < self._stop_px:
+                                    self._stop_px = soft_hard
+                            else:
+                                if be_px < self._stop_px:
+                                    self._stop_px = be_px
+                            return [
+                                Signal(
+                                    strategy_id=self.ctx.config.strategy_id,
+                                    exchange=bar.exchange,
+                                    symbol=bar.symbol,
+                                    action=SignalAction.BUY,
+                                    order_type=OrderType.MARKET,
+                                    quantity=part_qty,
+                                    reduce_only=True,
+                                    reason="delphi_short_tp1_scale_out",
+                                    ts_ms=self.ctx.now_ms,
+                                )
+                            ]
             return None
 
         # 2) Flat -> Evaluate 4 Entry Gates + Real-Market Regime Filters
@@ -307,7 +373,10 @@ class DelphiStrategy(Strategy):
                 self._entry_bar_idx = idx
                 self._highest = bar.high
                 self._lowest = bar.low
+                self._lowest_close = bar.close
+                self._tp1_done = False
                 self._stop_px = bar.close + self.params.init_stop_atr * cur_atr_1h
+                self._trail_px = self._stop_px
                 return [
                     Signal(
                         strategy_id=self.ctx.config.strategy_id,
@@ -504,6 +573,42 @@ STRATEGY_SPECS = [
         },
         "symbols": ["BTC/USDT:USDT"],
     },
+    {
+        "strategy_id": "strat_delphi_v47",
+        "name": "Delphi II v4.7（空头防洗盘与二段趋势优化版）",
+        "description": "针对空单急跌插针与逼空反抽洗盘的微观结构优化：保留盘中5.0×ATR硬防爆止损，空头跟踪止盈升级为1H收盘最低价实体锚定(4.0×ATR激活) + 1H收盘确认离场(5.4×ATR) + 可选分批脉冲止盈，吃满熊市二段主跌浪",
+        "note": "空头防洗盘与二段趋势优化版已审核",
+        "code": DELPHI_STRATEGY_CODE,
+        "params": {
+            "bars_per_day": 24,
+            "min_dist_atr_d": "0.20",
+            "soft_dist_atr_d": "2.8",
+            "max_dist_atr_d": "6.0",
+            "short_max_dist_atr_d": "3.2",
+            "extended_size_mult": "0.55",
+            "short_size_mult": "0.50",
+            "channel_lookback": 48,
+            "channel_atr_mult": "0.10",
+            "require_close_breakout": True,
+            "require_ema50_slope": True,
+            "init_stop_atr": "5.0",
+            "trail_activate_atr": "3.5",
+            "long_trail_atr": "8.0",
+            "short_trail_atr": "5.4",
+            "short_trail_activate_atr": "4.0",
+            "short_close_anchor": True,
+            "short_close_confirm_trail": True,
+            "short_tp1_enable": False,
+            "short_tp1_atr": "4.5",
+            "short_tp1_fraction": "0.30",
+            "lock_entry_atr": True,
+            "enable_reversal_exit": True,
+            "enable_stagnation_exit": False,
+            "use_atr_risk_sizing": True,
+            "risk_pct": "0.045",
+        },
+        "symbols": ["ETH/USDT:USDT", "SOL/USDT:USDT", "BTC/USDT:USDT"],
+    },
 ]
 
 
@@ -513,6 +618,12 @@ def main() -> None:
 
     with httpx.Client(base_url=base, headers=headers, timeout=300.0) as c:
         existing = {s["strategy_id"] for s in c.get("/api/v1/strategies").json()}
+        existing_runs: dict[tuple[str, str], str] = {}
+        for r_item in c.get("/api/v1/runs?env=backtest").json():
+            if r_item.get("status") == "COMPLETED":
+                syms = (r_item.get("config_snapshot") or {}).get("symbols") or []
+                if syms:
+                    existing_runs[(r_item["strategy_id"], syms[0])] = r_item["run_id"]
         run_ids: dict[str, dict[str, str]] = {}
 
         for spec in STRATEGY_SPECS:
@@ -534,6 +645,9 @@ def main() -> None:
 
             run_ids[sid] = {}
             for sym in spec["symbols"]:
+                if (sid, sym) in existing_runs:
+                    run_ids[sid][sym] = existing_runs[(sid, sym)]
+                    continue
                 bt = c.post(
                     "/api/v1/runs/launch",
                     json={

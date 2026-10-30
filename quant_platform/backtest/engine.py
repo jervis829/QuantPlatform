@@ -8,6 +8,7 @@ import random
 from typing import Any, Callable
 import uuid
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from quant_platform import ENGINE_VERSION
@@ -178,6 +179,14 @@ class BacktestEngine:
             symbol_spec_version=spec_ver_hash,
             engine_version=ENGINE_VERSION,
         )
+        ledger.clear_run_ledger(RunEnv.BACKTEST, run_id)
+        self.db_session.execute(
+            delete(SignalTraceRecord).where(
+                SignalTraceRecord.env == RunEnv.BACKTEST.value,
+                SignalTraceRecord.run_id == run_id,
+            )
+        )
+        self.db_session.flush()
 
         init_bals = dict(self.config.initial_balances) or {"USDT": Decimal("10000")}
         initial_equity = init_bals.get("USDT", Decimal("10000"))
@@ -352,8 +361,10 @@ class BacktestEngine:
                 should_flush = (step_idx % report_stride == 0) or (step_idx == total_steps)
                 eq_pt = broker.snapshot_equity(default_ex, flush=False)
                 equity_points.append(eq_pt)
-                for bal in broker.query_balance(default_ex):
-                    ledger.record_balance_snapshot(bal, flush=False)
+                record_bal = (total_steps <= 2000) or (step_idx % 24 == 0) or should_flush
+                if record_bal:
+                    for bal in broker.query_balance(default_ex):
+                        ledger.record_balance_snapshot(bal, flush=False)
                 if should_flush:
                     self.db_session.flush()
 

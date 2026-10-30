@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from quant_platform.core.enums import (
@@ -41,6 +41,21 @@ class UnifiedLedgerRepository:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def clear_run_ledger(self, env: RunEnv, run_id: str) -> None:
+        """Idempotently clear prior run ledger rows before deterministic backtest replay."""
+        for model in (
+            EquityCurveRecord,
+            BalanceSnapshotRecord,
+            FundingPaymentRecord,
+            FillRecord,
+            OrderRecord,
+            PositionRecord,
+        ):
+            self.session.execute(
+                delete(model).where(model.env == env.value, model.run_id == run_id)
+            )
+        self.session.flush()
 
     def upsert_run(self, run: RunRecord, created_at_ms: int | None = None) -> RunOrmRecord:
         existing = self.session.execute(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy import Engine, create_engine, event, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -20,9 +20,19 @@ def build_engine(database_url: str | None = None) -> Engine:
     kwargs: dict[str, Any] = {"future": True}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 30
         if ":memory:" in url:
             kwargs["poolclass"] = StaticPool
-    return create_engine(url, connect_args=connect_args, **kwargs)
+    engine = create_engine(url, connect_args=connect_args, **kwargs)
+    if url.startswith("sqlite") and ":memory:" not in url:
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn: Any, _conn_record: Any) -> None:
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL;")
+            cur.execute("PRAGMA synchronous=NORMAL;")
+            cur.execute("PRAGMA busy_timeout=30000;")
+            cur.close()
+    return engine
 
 
 def install_audit_immutability_triggers(engine: Engine) -> None:
