@@ -349,20 +349,22 @@ class BacktestEngine:
                     broker.on_bar(b)
                     _dispatch_intents(strategy.on_bar(b))
 
-                eq_pt = broker.snapshot_equity(default_ex)
+                should_flush = (step_idx % report_stride == 0) or (step_idx == total_steps)
+                eq_pt = broker.snapshot_equity(default_ex, flush=False)
                 equity_points.append(eq_pt)
                 for bal in broker.query_balance(default_ex):
-                    ledger.record_balance_snapshot(bal)
+                    ledger.record_balance_snapshot(bal, flush=False)
+                if should_flush:
+                    self.db_session.flush()
 
-                if progress_callback is not None and (
-                    step_idx % report_stride == 0 or step_idx == total_steps
-                ):
+                if progress_callback is not None and should_flush:
                     progress_callback(step_idx, total_steps, "EVENT_REPLAY")
 
             _dispatch_intents(strategy.on_stop())
-            final_pt = broker.snapshot_equity(default_ex)
+            final_pt = broker.snapshot_equity(default_ex, flush=True)
             if not equity_points or equity_points[-1].ts_ms != final_pt.ts_ms or equity_points[-1].equity != final_pt.equity:
                 equity_points.append(final_pt)
+            self.db_session.flush()
 
             final_status = RunStatus.STOPPED if canceled else RunStatus.COMPLETED
             if progress_callback is not None:

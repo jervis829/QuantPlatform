@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from typing import Any
 
 from quant_platform.core.hashing import canonical_json, sha256_hex
@@ -29,12 +29,15 @@ class CursorGuardedDataFeed(DataFeed):
         self._clock = clock
         self._source = source
         self._bars: dict[tuple[str, str, str], list[Bar]] = {}
+        self._bar_open_ts_index: dict[tuple[str, str, str], list[int]] = {}
+        self._bar_close_ts_index: dict[tuple[str, str, str], list[int]] = {}
         self._ticks: dict[tuple[str, str], list[Tick]] = {}
         self._orderbooks: dict[tuple[str, str], list[OrderBookSnapshot]] = {}
         self._ob_ts_index: dict[tuple[str, str], list[int]] = {}
         self._mark_prices: dict[tuple[str, str], list[MarkIndexPrice]] = {}
         self._mark_ts_index: dict[tuple[str, str], list[int]] = {}
         self._funding_rates: dict[tuple[str, str], list[FundingRatePoint]] = {}
+        self._fr_ts_index: dict[tuple[str, str], list[int]] = {}
         self._symbol_specs: dict[tuple[str, str], list[SymbolSpec]] = {}
 
     def cursor_ts_ms(self) -> int:
@@ -70,7 +73,20 @@ class CursorGuardedDataFeed(DataFeed):
             raise LookaheadError(requested_ts_ms=start_ts_ms, current_ts_ms=now, resource=f"bars:{exchange}:{symbol}")
         upper = self._guard_ts(end_ts_ms, f"bars:{exchange}:{symbol}:{interval}")
 
-        series = self._bars.get((exchange, symbol, interval), [])
+        key = (exchange, symbol, interval)
+        series = self._bars.get(key, [])
+        close_idx = self._bar_close_ts_index.get(key)
+        if close_idx is not None:
+            end_pos = bisect_right(close_idx, upper)
+            start_pos = bisect_left(self._bar_open_ts_index[key], start_ts_ms) if start_ts_ms is not None else 0
+            if end_pos <= start_pos:
+                return []
+            if limit is not None and limit >= 0:
+                if limit == 0:
+                    return []
+                start_pos = max(start_pos, end_pos - limit)
+            return series[start_pos:end_pos]
+
         out: list[Bar] = []
         for b in series:
             if start_ts_ms is not None and b.open_time_ms < start_ts_ms:
@@ -154,7 +170,13 @@ class CursorGuardedDataFeed(DataFeed):
         if start_ts_ms is not None and start_ts_ms > now:
             raise LookaheadError(requested_ts_ms=start_ts_ms, current_ts_ms=now, resource=f"funding:{exchange}:{symbol}")
         upper = self._guard_ts(end_ts_ms, f"funding:{exchange}:{symbol}")
-        series = self._funding_rates.get((exchange, symbol), [])
+        key = (exchange, symbol)
+        series = self._funding_rates.get(key, [])
+        fr_idx = self._fr_ts_index.get(key)
+        if fr_idx is not None:
+            end_pos = bisect_right(fr_idx, upper)
+            start_pos = bisect_left(fr_idx, start_ts_ms) if start_ts_ms is not None else 0
+            return series[start_pos:end_pos] if end_pos > start_pos else []
         return [
             fp
             for fp in series
@@ -292,7 +314,14 @@ class HistoricalDataFeed(CursorGuardedDataFeed):
             bars=bars,
             rest_backfiller=rest_backfiller,
         )
-        self._bars[(exchange, symbol, interval)] = validated
+        key = (exchange, symbol, interval)
+        self._bars[key] = validated
+        if all(b.is_closed for b in validated):
+            self._bar_open_ts_index[key] = [b.open_time_ms for b in validated]
+            self._bar_close_ts_index[key] = [b.close_time_ms for b in validated]
+        else:
+            self._bar_open_ts_index.pop(key, None)
+            self._bar_close_ts_index.pop(key, None)
 
     def load_ticks(
         self,
@@ -337,7 +366,9 @@ class HistoricalDataFeed(CursorGuardedDataFeed):
                 raise CrossExchangeIsolationError(exchange, fp.exchange, symbol)
             if fp.symbol != symbol:
                 raise DataIntegrityError(f"FundingRate symbol mismatch: expected {symbol}, got {fp.symbol}")
-        self._funding_rates[(exchange, symbol)] = sorted(rates, key=lambda r: r.funding_ts_ms)
+        ordered = sorted(rates, key=lambda r: r.funding_ts_ms)
+        self._funding_rates[(exchange, symbol)] = ordered
+        self._fr_ts_index[(exchange, symbol)] = [r.funding_ts_ms for r in ordered]
 
     def all_timeline_timestamps(self) -> list[int]:
         """Sorted union of event timestamps across loaded historical streams for event-driven simulation."""

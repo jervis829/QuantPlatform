@@ -44,8 +44,8 @@ import type {
 import { NumericDisplay } from "./numeric-display";
 import { Button } from "../ui/button";
 
-type TimeframeOption = "1m" | "5m" | "15m" | "1h";
-type RangePreset = "30B" | "60B" | "ALL";
+type TimeframeOption = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+type RangePreset = "30B" | "60B" | "240B" | "ALL";
 type MarkerFilter = "ALL" | "BUY" | "SELL" | "NONE";
 
 const TF_SECONDS: Record<TimeframeOption, number> = {
@@ -53,6 +53,8 @@ const TF_SECONDS: Record<TimeframeOption, number> = {
   "5m": 300,
   "15m": 900,
   "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
 };
 
 function computeSma(bars: ChartBarPoint[], period: number): Array<{ time: Time; value: number }> {
@@ -116,9 +118,10 @@ function computeBollinger(
 
 function aggregateBarsByTimeframe(
   sortedBars: ChartBarPoint[],
-  tfSec: number
+  tfSec: number,
+  baseStepSec: number
 ): ChartBarPoint[] {
-  if (tfSec <= 60 || sortedBars.length === 0) return sortedBars;
+  if (tfSec <= baseStepSec || sortedBars.length === 0) return sortedBars;
   const buckets = new Map<number, ChartBarPoint>();
   for (const b of sortedBars) {
     const bucketSec = Math.floor(b.time_sec / tfSec) * tfSec;
@@ -214,7 +217,6 @@ export function FinancialChartContainer({
   const palette = DESIGN_TOKENS.chartColors[pnlPolarity];
   const tickSize = symbolSpec?.tick_size ?? "0.1";
   const stepSize = symbolSpec?.step_size ?? "0.001";
-  const tfSec = TF_SECONDS[timeframe];
   const effectiveHeight = isFullscreen ? 580 : heightPx;
 
   const sortedRawBars = useMemo(
@@ -222,15 +224,39 @@ export function FinancialChartContainer({
     [bars]
   );
 
-  const aggBars = useMemo(
-    () => aggregateBarsByTimeframe(sortedRawBars, tfSec),
-    [sortedRawBars, tfSec]
+  const baseStepSec = useMemo(() => {
+    if (sortedRawBars.length >= 2) {
+      const diff = sortedRawBars[1].time_sec - sortedRawBars[0].time_sec;
+      if (diff > 0) return diff;
+    }
+    return 60;
+  }, [sortedRawBars]);
+
+  const availableTimeframes = useMemo<TimeframeOption[]>(
+    () => (baseStepSec >= 3600 ? ["1h", "4h", "1d"] : ["1m", "5m", "15m", "1h"]),
+    [baseStepSec]
   );
 
-  const sortedEquity = useMemo(
-    () => [...equitySeries].sort((a, b) => a.time_sec - b.time_sec),
-    [equitySeries]
+  const effectiveTimeframe: TimeframeOption = availableTimeframes.includes(timeframe)
+    ? timeframe
+    : availableTimeframes[0];
+  const tfSec = Math.max(TF_SECONDS[effectiveTimeframe], baseStepSec);
+
+  const aggBars = useMemo(
+    () => aggregateBarsByTimeframe(sortedRawBars, tfSec, baseStepSec),
+    [sortedRawBars, tfSec, baseStepSec]
   );
+
+  const sortedEquity = useMemo(() => {
+    const raw = [...equitySeries].sort((a, b) => a.time_sec - b.time_sec);
+    if (raw.length === 0) return raw;
+    const byBucket = new Map<number, ChartEquityPoint>();
+    for (const pt of raw) {
+      const bSec = Math.floor(pt.time_sec / tfSec) * tfSec;
+      byBucket.set(bSec, { ...pt, time_sec: bSec });
+    }
+    return Array.from(byBucket.values()).sort((a, b) => a.time_sec - b.time_sec);
+  }, [equitySeries, tfSec]);
 
   const indexedMarkers = useMemo<IndexedTradeMarker[]>(() => {
     const ordered = [...tradeMarkers].sort(
@@ -304,10 +330,10 @@ export function FinancialChartContainer({
       },
       timeScale: {
         borderColor: "#1e293b",
-        timeVisible: true,
+        timeVisible: effectiveTimeframe !== "1d",
         secondsVisible: false,
         rightOffset: 4,
-        barSpacing: timeframe === "1m" ? 8 : timeframe === "5m" ? 14 : 20,
+        barSpacing: effectiveTimeframe === "1m" || effectiveTimeframe === "1h" ? 8 : 12,
       },
     });
     mainChartRef.current = mainChart;
@@ -692,7 +718,7 @@ export function FinancialChartContainer({
     stepSize,
     tfSec,
     tickSize,
-    timeframe,
+    effectiveTimeframe,
   ]);
 
   // Apply range preset changes
@@ -703,7 +729,7 @@ export function FinancialChartContainer({
       chart.timeScale().fitContent();
       return;
     }
-    const count = rangePreset === "30B" ? 30 : 60;
+    const count = rangePreset === "30B" ? 30 : rangePreset === "60B" ? 60 : 240;
     const toIdx = aggBars.length - 1;
     const fromIdx = Math.max(0, toIdx - count);
     chart.timeScale().setVisibleRange({
@@ -839,14 +865,14 @@ export function FinancialChartContainer({
 
           {/* Timeframe Switcher */}
           <div className="inline-flex items-center rounded border border-slate-800 bg-slate-900 p-0.5">
-            {(["1m", "5m", "15m", "1h"] as TimeframeOption[]).map((tf) => (
+            {availableTimeframes.map((tf) => (
               <button
                 key={tf}
                 type="button"
                 onClick={() => setTimeframe(tf)}
                 className={cn(
-                  "rounded px-2 py-0.5 font-mono text-[11px] transition-colors",
-                  timeframe === tf
+                  "rounded px-2 py-0.5 font-mono text-[11px] uppercase transition-colors",
+                  effectiveTimeframe === tf
                     ? "bg-blue-600 text-white font-semibold"
                     : "text-slate-400 hover:text-white"
                 )}
@@ -985,8 +1011,8 @@ export function FinancialChartContainer({
                 <div className="flex items-center gap-1">
                   {(
                     [
-                      ["30B", "近30根"],
                       ["60B", "近60根"],
+                      ["240B", "近240根"],
                       ["ALL", "全部"],
                     ] as Array<[RangePreset, string]>
                   ).map(([preset, lbl]) => (

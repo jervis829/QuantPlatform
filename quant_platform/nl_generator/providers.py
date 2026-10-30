@@ -126,8 +126,9 @@ class NLGeneratedStrategy(Strategy):
         self._closes.append(bar.close)
         if len(self._closes) < self.params.slow_window:
             return None
-        cur_fast = {fn_name}(self._closes, self.params.fast_window)
-        cur_slow = {fn_name}(self._closes, self.params.slow_window)
+        tail = self._closes[-max(self.params.slow_window * 4, 160):]
+        cur_fast = {fn_name}(tail, self.params.fast_window)
+        cur_slow = {fn_name}(tail, self.params.slow_window)
         intents = None
         pos = self.ctx.get_position(bar.exchange, bar.symbol)
         cur_qty = pos.quantity if pos is not None else Decimal("0")

@@ -229,7 +229,7 @@ class UnifiedLedgerRepository:
         self.session.flush()
         return row
 
-    def record_balance_snapshot(self, bal: Balance) -> BalanceSnapshotRecord:
+    def record_balance_snapshot(self, bal: Balance, *, flush: bool = True) -> BalanceSnapshotRecord:
         row = BalanceSnapshotRecord(
             env=bal.env.value,
             run_id=bal.run_id,
@@ -245,10 +245,11 @@ class UnifiedLedgerRepository:
             ts_ms=bal.ts_ms,
         )
         self.session.add(row)
-        self.session.flush()
+        if flush:
+            self.session.flush()
         return row
 
-    def record_equity_point(self, pt: EquityPoint) -> EquityCurveRecord:
+    def record_equity_point(self, pt: EquityPoint, *, flush: bool = True) -> EquityCurveRecord:
         row = EquityCurveRecord(
             env=pt.env.value,
             run_id=pt.run_id,
@@ -266,7 +267,8 @@ class UnifiedLedgerRepository:
             net_exposure=pt.net_exposure,
         )
         self.session.add(row)
-        self.session.flush()
+        if flush:
+            self.session.flush()
         return row
 
     def record_funding_payment(self, fp: FundingPayment) -> FundingPaymentRecord:

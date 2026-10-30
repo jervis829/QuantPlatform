@@ -93,9 +93,10 @@ from quant_platform.core.enums import (
     RunStatus,
 )
 from quant_platform.core.hashing import canonical_json, compute_run_id, sha256_hex
-from quant_platform.core.models import Bar, Position, RunRecord, StrategyConfig, SymbolSpec
+from quant_platform.core.models import Bar, FundingRatePoint, Position, RunRecord, StrategyConfig, SymbolSpec
 from quant_platform.data.clock import SimulatedClock
 from quant_platform.data.feed import StreamingDataFeed
+from quant_platform.data.historical import load_real_binance_1h_dataset
 from quant_platform.db.ledger import UnifiedLedgerRepository
 from quant_platform.db.schema import (
     AuditLogRecord,
@@ -145,8 +146,9 @@ class _WallMsClock:
 def _default_perp_spec(symbol: str = "BTC/USDT:USDT", exchange: str = "binance") -> SymbolSpec:
     is_spot = ":" not in symbol
     base_part = (symbol.split("/")[0] if "/" in symbol else "BTC").upper()
-    is_alt = base_part in {"ETH", "SOL"}
     is_sol = base_part == "SOL"
+    is_cent_tick = base_part in {"ETH", "BNB"}
+    tick_sz = Decimal("0.001") if is_sol else (Decimal("0.01") if is_cent_tick else Decimal("0.1"))
     return SymbolSpec(
         exchange=exchange,
         symbol=symbol,
@@ -155,7 +157,7 @@ def _default_perp_spec(symbol: str = "BTC/USDT:USDT", exchange: str = "binance")
         quote_asset="USDT",
         margin_asset="USDT",
         contract_size=Decimal("1"),
-        tick_size=Decimal("0.01") if is_alt else Decimal("0.1"),
+        tick_size=tick_sz,
         step_size=Decimal("0.01") if is_sol else Decimal("0.001"),
         min_qty=Decimal("0.01") if is_sol else Decimal("0.001"),
         max_qty=Decimal("100000") if is_sol else Decimal("1000"),
@@ -275,142 +277,33 @@ def _canonical_sample_bars(exchange: str = "binance", symbol: str = "BTC/USDT:US
     return out
 
 
-_DELPHI_BARS_CACHE: dict[tuple[str, str], list[Bar]] = {}
+_FAST_FIXTURE_STRATEGY_IDS: frozenset[str] = frozenset(
+    {
+        "s1",
+        "strat_breakout",
+        "strat_nl_api",
+        "strat_cp_test",
+        "strat_kline_markers",
+        "strat_cancel_test",
+        "strat_cursor_test",
+        "demo_btc_ema_cross",
+        "any",
+    }
+)
 
 
-def _delphi_multi_regime_1h_bars(exchange: str = "binance", symbol: str = "BTC/USDT:USDT") -> list[Bar]:
+def _resolve_dataset_for_strategy(
+    exchange: str = "binance",
+    symbol: str = "BTC/USDT:USDT",
+    strategy_id: str = "",
+) -> tuple[list[Bar], list[FundingRatePoint]]:
     """
-    Deterministic 3,360-bar (140 UTC days = 50-day 24H Daily EMA50/ATR14 warm-up +
-    90 full days / 3.0 months active evaluation) 1H multi-regime crypto perpetual dataset:
-      - Days 0..49: 50-day 24H daily indicator warm-up
-      - Days 50..63: Multi-wave bull trend with intra-trend pullbacks
-      - Days 64..71: Choppy range with bull-trap false breakouts
-      - Days 72..78: Parabolic climax surge (> 3.8..8.5 ATR_D) & high-altitude distribution traps
-      - Days 79..83: Sharp climax top reversal flush
-      - Days 84..91: EMA20/EMA50 entanglement whipsaw chop
-      - Days 92..110: Bear grinding trend with periodic violent short-covering squeezes
-      - Days 111..120: Second-leg bear capitulation waterfall & deep oversold exhaustion traps
-      - Days 121..139: V-bottom accumulation & fresh multi-wave bull recovery
+    Serve authentic historical Binance 1H OHLCV + 8H funding settlements (2023-10-15..2026-07-01 UTC)
+    for all user and benchmark strategies; preserve compact 180-bar 1m fixture only for API unit-test IDs.
     """
-    cache_key = (exchange, symbol)
-    cached = _DELPHI_BARS_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    import random as _rng_mod
-
-    rng = _rng_mod.Random(20261030 + sum(ord(c) for c in symbol))
-    upper_sym = symbol.upper()
-    if upper_sym.startswith("ETH"):
-        price, beta, vmult, tick = 3000.0, 1.18, 1.32, Decimal("0.01")
-    elif upper_sym.startswith("SOL"):
-        price, beta, vmult, tick = 140.0, 1.38, 1.85, Decimal("0.01")
-    else:
-        price, beta, vmult, tick = 60000.0, 1.00, 1.00, Decimal("0.1")
-
-    base_ts = 1_704_067_200_000
-    out: list[Bar] = []
-    tick_f = float(tick)
-    for h in range(140 * 24):
-        d = h // 24
-        hr = h % 24
-        if d < 25:
-            drift, vol = 0.00012, 0.0058
-        elif d < 50:
-            drift = -0.00060 if (d % 6) in (4, 5) else 0.00062
-            vol = 0.0062
-        elif d < 64:
-            cyc = (d - 50) % 5
-            drift = -0.00095 if cyc == 3 else (0.00135 if cyc in (0, 1, 2) else 0.00025)
-            vol = 0.0070
-        elif d < 72:
-            if hr in (5, 6, 7) and (d % 2 == 0):
-                drift = 0.0036
-            elif hr in (8, 9, 10, 11) and (d % 2 == 0):
-                drift = -0.0031
-            else:
-                drift = 0.00010 if (d % 2 == 0) else -0.00020
-            vol = 0.0078
-        elif d < 79:
-            if d < 75:
-                drift = 0.00245
-            else:
-                drift = 0.00320 if hr < 5 else (-0.00180 if hr < 14 else 0.00010)
-            vol = 0.0108
-        elif d < 84:
-            drift = -0.00310
-            vol = 0.0112
-        elif d < 92:
-            drift = 0.00085 if (h // 16) % 2 == 0 else -0.00090
-            vol = 0.0072
-        elif d < 111:
-            cyc = (d - 92) % 4
-            if cyc == 2 and 8 <= hr < 13:
-                drift = 0.0046
-            elif cyc == 2 and 13 <= hr < 19:
-                drift = -0.0030
-            else:
-                drift = -0.00105
-            vol = 0.0078
-        elif d < 121:
-            if d < 118:
-                drift = 0.0040 if ((d in (113, 116)) and 9 <= hr < 13) else -0.00215
-            else:
-                drift = -0.0030 if hr < 5 else (0.0022 if hr < 14 else -0.0002)
-            vol = 0.0098
-        elif d < 127:
-            drift = 0.00130 if d >= 123 else 0.00025
-            vol = 0.0082
-        else:
-            cyc = (d - 127) % 5
-            drift = -0.00085 if cyc == 3 else 0.00140
-            vol = 0.0072
-
-        eff_drift = drift * beta
-        eff_vol = vol * vmult
-        open_f = price
-        ret = eff_drift + eff_vol * rng.gauss(0.0, 0.85)
-        close_f = max(tick_f * 20.0, round(open_f * (1.0 + ret) / tick_f) * tick_f)
-        if close_f == open_f:
-            close_f = round((open_f + tick_f) / tick_f) * tick_f
-        hi_mult = rng.uniform(0.35, 1.25) if eff_drift < 0 else rng.uniform(0.20, 0.85)
-        lo_mult = rng.uniform(0.35, 1.15) if eff_drift > 0 else rng.uniform(0.20, 0.85)
-        hi_f = max(open_f, close_f, round(max(open_f, close_f) * (1.0 + eff_vol * hi_mult) / tick_f) * tick_f)
-        lo_f = min(open_f, close_f, max(tick_f, round(min(open_f, close_f) * (1.0 - eff_vol * lo_mult) / tick_f) * tick_f))
-        vol_f = (850.0 / vmult) * (1.0 + 1.8 * abs(ret) / max(eff_vol, 1e-6))
-
-        open_px = Decimal(str(open_f)).quantize(tick)
-        close_px = Decimal(str(close_f)).quantize(tick)
-        if close_px == open_px:
-            close_px = (open_px + tick).quantize(tick)
-        high_px = max(open_px, close_px, Decimal(str(hi_f)).quantize(tick))
-        low_px = min(open_px, close_px, max(tick, Decimal(str(lo_f)).quantize(tick)))
-        v_dec = Decimal(str(round(vol_f, 3)))
-        o_ts = base_ts + h * 3_600_000
-        c_ts = o_ts + 3_599_999
-
-        out.append(
-            Bar(
-                exchange=exchange,
-                symbol=symbol,
-                interval="1h",
-                open_time_ms=o_ts,
-                close_time_ms=c_ts,
-                open=open_px,
-                high=high_px,
-                low=low_px,
-                close=close_px,
-                volume=v_dec,
-                quote_volume=(close_px * v_dec).quantize(Decimal("0.01")),
-                trade_count=int(vol_f * 2),
-                is_closed=True,
-                exchange_ts_ms=c_ts,
-                local_recv_ts_ms=c_ts,
-            )
-        )
-        price = float(close_px)
-    _DELPHI_BARS_CACHE[cache_key] = out
-    return out
+    if strategy_id in _FAST_FIXTURE_STRATEGY_IDS:
+        return _canonical_sample_bars(exchange, symbol), []
+    return load_real_binance_1h_dataset(exchange, symbol)
 
 
 def _resolve_bars_for_strategy(
@@ -418,9 +311,8 @@ def _resolve_bars_for_strategy(
     symbol: str = "BTC/USDT:USDT",
     strategy_id: str = "",
 ) -> list[Bar]:
-    if strategy_id.startswith("strat_delphi"):
-        return _delphi_multi_regime_1h_bars(exchange, symbol)
-    return _canonical_sample_bars(exchange, symbol)
+    bars, _ = _resolve_dataset_for_strategy(exchange, symbol, strategy_id)
+    return bars
 
 
 def _serialize_version(v: StrategyVersionRecord) -> StrategyVersionResponse:
@@ -588,6 +480,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             _default_perp_spec("BTC/USDT:USDT", "binance"),
             _default_perp_spec("ETH/USDT:USDT", "binance"),
             _default_perp_spec("SOL/USDT:USDT", "binance"),
+            _default_perp_spec("BNB/USDT:USDT", "binance"),
             _default_perp_spec("BTC/USDT", "binance"),
             _default_perp_spec("ETH/USDT", "binance"),
         ]
@@ -1333,7 +1226,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 )
 
             cls = compile_strategy_class(ver.code)
-            bars = _resolve_bars_for_strategy(req.exchange, req.symbol, req.strategy_id)
+            bars, fundings = _resolve_dataset_for_strategy(req.exchange, req.symbol, req.strategy_id)
             spec = _default_perp_spec(req.symbol, req.exchange)
             init_usdt = to_strict_decimal(req.initial_usdt, "initial_usdt")
             lev = to_strict_decimal(req.leverage, "leverage")
@@ -1361,6 +1254,8 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 bt_feed = HistoricalDataFeed(clock=bt_clock)
                 bt_feed.register_symbol_spec(spec)
                 bt_feed.load_bars(req.exchange, req.symbol, bars[0].interval, bars)
+                if fundings:
+                    bt_feed.load_funding_rates(req.exchange, req.symbol, fundings)
 
                 if req.async_mode:
                     slip_cfg = SlippageModelConfig()
@@ -1442,6 +1337,8 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                                 w_feed = HistoricalDataFeed(clock=w_clock)
                                 w_feed.register_symbol_spec(spec)
                                 w_feed.load_bars(ex_name, sym_name, bars[0].interval, bars)
+                                if fundings:
+                                    w_feed.load_funding_rates(ex_name, sym_name, fundings)
                                 w_engine = BacktestEngine(
                                     db_session=bg_session,
                                     clock=w_clock,

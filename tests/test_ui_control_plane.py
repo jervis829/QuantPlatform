@@ -403,3 +403,34 @@ def test_ledger_keyset_cursor_pagination_no_duplicates(tmp_path: Path) -> None:
     assert len(seen_cids) == expected_total
     assert len(set(seen_cids)) == expected_total
 
+
+def test_real_historical_binance_klines_match_authentic_market_prices() -> None:
+    from datetime import datetime, timezone
+    from quant_platform.api.app import _default_perp_spec, _resolve_dataset_for_strategy
+
+    btc_bars, btc_fundings = _resolve_dataset_for_strategy("binance", "BTC/USDT:USDT", "strat_delphi_v46")
+    assert len(btc_bars) == 23760
+    assert len(btc_fundings) == 2970
+
+    by_open_ts = {b.open_time_ms: b for b in btc_bars}
+
+    # Exact timestamp flagged by user: 2024-03-07 06:00..06:59:59 UTC -> real BTC ~$65,931.7 (never $101,464.8)
+    ts_mar7_06 = int(datetime(2024, 3, 7, 6, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    bar_mar7 = by_open_ts[ts_mar7_06]
+    assert float(bar_mar7.close) == 65931.7
+    assert 65000.0 <= float(bar_mar7.high) <= 67000.0
+
+    # BTC never reached $100,000 before December 2024
+    ts_dec1_2024 = int(datetime(2024, 12, 1, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    pre_dec_max_high = max(float(b.high) for b in btc_bars if b.open_time_ms < ts_dec1_2024)
+    assert pre_dec_max_high < 100000.0
+
+    # Real $100,000 breakout occurred on 2024-12-05 UTC
+    ts_dec5_03 = int(datetime(2024, 12, 5, 3, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    assert float(by_open_ts[ts_dec5_03].high) > 100000.0
+
+    # SOL perpetual tick size supports 3-decimal 2023-2024 historical prices (e.g. 139.176)
+    sol_spec = _default_perp_spec("SOL/USDT:USDT", "binance")
+    assert str(sol_spec.tick_size) == "0.001"
+
+

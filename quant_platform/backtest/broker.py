@@ -992,7 +992,7 @@ class BacktestBroker(BrokerAdapter):
             "rollover_order": roll_order,
         }
 
-    def snapshot_equity(self, exchange: str = "binance") -> EquityPoint:
+    def snapshot_equity(self, exchange: str = "binance", *, flush: bool = True) -> EquityPoint:
         now = self._clock.now_ms()
         cash_usdt = self._cash.get((exchange, "USDT"), ZERO)
         borrowed_usdt = self._borrowed.get((exchange, "USDT"), ZERO)
@@ -1060,7 +1060,7 @@ class BacktestBroker(BrokerAdapter):
             net_exposure=net_exp,
         )
         if self._ledger is not None:
-            self._ledger.record_equity_point(pt)
+            self._ledger.record_equity_point(pt, flush=flush)
         return pt
 
     # ------------------------------------------------------------------

@@ -1,7 +1,8 @@
 """
-Uploads AST-safe Delphi II v4.4 (Baseline), Delphi II v4.5 (Hard-Cap Conservative),
-and Delphi II v4.6 (Tiered Corridor Anti-Miss) Python Strategy implementations into
-the live QuantPlatform API and runs real BacktestEngine + Parameter Sensitivity verifications.
+Seeds AST-safe Delphi II v4.4 (Original Baseline), Delphi II v4.5 (1H Narrow-Stop Cap),
+Delphi II v4.6 (Real-Market 48H Swing Enhancement), and BTC Dual-SMA Starter Template into
+the live QuantPlatform API and runs real historical Binance USDT-M Perpetual backtests
+(2023-10-15 .. 2026-07-01 UTC, 23,760 1H bars + 2,970 8H funding settlements).
 """
 
 from __future__ import annotations
@@ -15,26 +16,30 @@ from pydantic import BaseModel
 from quant_platform.core.enums import OrderType, SignalAction
 from quant_platform.core.interfaces import Strategy
 from quant_platform.core.models import Bar, Signal
-from quant_platform.strategy.indicators import ema
 from quant_platform.strategy.ui_meta import ui_param
 
 
 class DelphiParams(BaseModel):
     bars_per_day: int = ui_param(24, ge=4, le=24, ui_group="signal", unit="Bars", description="大周期聚合K线根数（24根1H = 真实UTC日线）")
-    min_dist_atr_d: Decimal = ui_param(Decimal("1.0"), ui_group="signal", unit="ATR_D", description="价格距日线EMA50最小偏离倍数（避开均线粘合震荡区）")
-    soft_dist_atr_d: Decimal = ui_param(Decimal("3.8"), ui_group="signal", unit="ATR_D", description="标准满仓走廊上限（超过后进入强趋势延续段，自动按比例降仓）")
-    max_dist_atr_d: Decimal = ui_param(Decimal("8.5"), ui_group="signal", unit="ATR_D", description="极端偏离硬上限（v4.4=999无上限，v4.5=3.5一刀切禁开，v4.6=8.5防踏空）")
-    extended_size_mult: Decimal = ui_param(Decimal("0.60"), ui_group="risk_sizing", unit="Ratio", description="强趋势延续段[soft, max)仓位缩放系数（既吃二段趋势，又防高潮顶重伤）")
-    channel_lookback: int = ui_param(15, ge=5, le=60, ui_group="signal", unit="Bars", description="1H突破通道回看K线根数")
-    channel_atr_mult: Decimal = ui_param(Decimal("0.45"), ui_group="signal", unit="ATR", description="1H通道突破外扩ATR缓冲倍数（过滤横盘假突破毛刺）")
-    init_stop_atr: Decimal = ui_param(Decimal("3.5"), ui_group="risk_sizing", unit="ATR", description="初始硬止损距离（ATR倍数）")
-    trail_activate_atr: Decimal = ui_param(Decimal("1.5"), ui_group="risk_sizing", unit="ATR", description="移动止损激活浮盈阈值")
-    long_trail_atr: Decimal = ui_param(Decimal("2.0"), ui_group="risk_sizing", unit="ATR", description="多单移动止损回撤距离（最高价 - N*ATR）")
-    short_trail_atr: Decimal = ui_param(Decimal("1.8"), ui_group="risk_sizing", unit="ATR", description="空单移动止损回撤距离（v4.4=0.5极易被洗，v4.5/v4.6=1.8抗熊市逼空反弹）")
-    lock_entry_atr: bool = ui_param(True, ui_group="execution", description="锁定开仓ATR下限（防止横盘缩量时止损距离被动勒紧）")
-    enable_reversal_exit: bool = ui_param(True, ui_group="execution", description="启用日线趋势反转与30根K线动能停滞主动离场")
+    min_dist_atr_d: Decimal = ui_param(Decimal("0.20"), ui_group="signal", unit="ATR_D", description="价格距日线EMA50最小偏离倍数（v4.4=1.0易错过底部启动，v4.6=0.20捕捉主升起点）")
+    soft_dist_atr_d: Decimal = ui_param(Decimal("2.8"), ui_group="signal", unit="ATR_D", description="标准满额风险走廊上限（超过后进入强趋势延续段，自动降仓）")
+    max_dist_atr_d: Decimal = ui_param(Decimal("6.0"), ui_group="signal", unit="ATR_D", description="多头极端偏离硬上限（防止高潮顶接盘）")
+    short_max_dist_atr_d: Decimal = ui_param(Decimal("3.2"), ui_group="signal", unit="ATR_D", description="空头极端偏离硬上限（防止深跌超卖区追空被逼空）")
+    extended_size_mult: Decimal = ui_param(Decimal("0.55"), ui_group="risk_sizing", unit="Ratio", description="强趋势延续走廊[soft, max)仓位缩放系数")
+    short_size_mult: Decimal = ui_param(Decimal("0.50"), ui_group="risk_sizing", unit="Ratio", description="空头相对多头风险权重（适配加密市场长期正偏与逼空特征）")
+    channel_lookback: int = ui_param(48, ge=10, le=96, ui_group="signal", unit="Bars", description="1H突破通道回看K线根数（v4.4=15h高频易磨损，v4.6=48h波段箱体突破）")
+    channel_atr_mult: Decimal = ui_param(Decimal("0.10"), ui_group="signal", unit="ATR", description="1H通道突破外扩ATR缓冲倍数")
+    require_close_breakout: bool = ui_param(True, ui_group="signal", description="要求1H实体收盘价站上突破通道（过滤盘中假突破插针诱多/诱空）")
+    require_ema50_slope: bool = ui_param(True, ui_group="signal", description="要求日线EMA50斜率与开仓方向一致（过滤震荡期均线横盘假信号）")
+    init_stop_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="初始硬止损距离（1H ATR倍数）")
+    trail_activate_atr: Decimal = ui_param(Decimal("3.5"), ui_group="risk_sizing", unit="ATR_1H", description="移动止损激活浮盈阈值（1H ATR倍数）")
+    long_trail_atr: Decimal = ui_param(Decimal("8.0"), ui_group="risk_sizing", unit="ATR_1H", description="多单吊灯移动止损回撤距离（v4.4=2.0易被洗出，v4.6=8.0吃满周线主升浪）")
+    short_trail_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="空单吊灯移动止损回撤距离（v4.4=0.5，v4.6=5.0抗熊市反抽）")
+    lock_entry_atr: bool = ui_param(True, ui_group="execution", description="锁定开仓ATR下限（防止横盘缩量时止损距离被动收紧）")
+    enable_reversal_exit: bool = ui_param(True, ui_group="execution", description="启用日线EMA20/EMA50共振趋势反转主动平仓")
+    enable_stagnation_exit: bool = ui_param(False, ui_group="execution", description="启用30根K线动能停滞离场")
     use_atr_risk_sizing: bool = ui_param(True, ui_group="risk_sizing", danger_level="high", danger_hint="开启后按单笔固定净值风险比例动态定仓；关闭则按固定65%名义仓位下单", description="启用ATR波动率风险平价定仓")
-    risk_pct: Decimal = ui_param(Decimal("0.055"), ui_group="risk_sizing", unit="Ratio", danger_level="high", danger_hint="单笔初始止损占账户净值比例，调高将放大单笔回撤", description="标准走廊单笔风险预算占比")
+    risk_pct: Decimal = ui_param(Decimal("0.045"), ui_group="risk_sizing", unit="Ratio", danger_level="high", danger_hint="单笔初始止损占账户净值比例，调高将放大单笔回撤", description="标准走廊单笔风险预算占比")
 
 
 class DelphiStrategy(Strategy):
@@ -45,6 +50,11 @@ class DelphiStrategy(Strategy):
         self._trs_1h = []
         self._daily_closes = []
         self._daily_trs = []
+        self._ema20_d = None
+        self._ema50_d = None
+        self._ema20_d_hist = []
+        self._ema50_d_hist = []
+        self._ema20_1h = None
         self._cur_day_bars = []
         self._entry_px = Decimal("0")
         self._entry_atr = Decimal("0")
@@ -52,6 +62,7 @@ class DelphiStrategy(Strategy):
         self._stop_px = Decimal("0")
         self._highest = Decimal("0")
         self._lowest = Decimal("0")
+        self._trade_start_ms = 1704067200000  # 2024-01-01 00:00:00 UTC after 2023 Q4 warm-up
         return None
 
     def _calc_atr(self, trs, window):
@@ -59,17 +70,6 @@ class DelphiStrategy(Strategy):
             return Decimal("0")
         sub = trs[-window:]
         return sum(sub, Decimal("0")) / Decimal(len(sub))
-
-    def _tick_for(self, symbol: str) -> Decimal:
-        u = symbol.upper()
-        if u.startswith("ETH") or u.startswith("SOL"):
-            return Decimal("0.01")
-        return Decimal("0.1")
-
-    def _step_for(self, symbol: str) -> Decimal:
-        if symbol.upper().startswith("SOL"):
-            return Decimal("0.01")
-        return Decimal("0.001")
 
     def on_bar(self, bar: Bar):
         idx = len(self._bars)
@@ -80,6 +80,13 @@ class DelphiStrategy(Strategy):
             tr_1h = max(bar.high - bar.low, abs(bar.high - prev_c), abs(bar.low - prev_c))
         self._bars.append(bar)
         self._trs_1h.append(tr_1h)
+
+        alpha20 = Decimal("2") / Decimal("21")
+        alpha50 = Decimal("2") / Decimal("51")
+        if self._ema20_1h is None:
+            self._ema20_1h = bar.close
+        else:
+            self._ema20_1h = alpha20 * bar.close + (Decimal("1") - alpha20) * self._ema20_1h
 
         # Roll closed 24H UTC Daily candles strictly without lookahead
         self._cur_day_bars.append(bar)
@@ -95,25 +102,33 @@ class DelphiStrategy(Strategy):
                 d_tr = max(d_hi - d_lo, abs(d_hi - prev_dc), abs(d_lo - prev_dc))
             self._daily_closes.append(d_cl)
             self._daily_trs.append(d_tr)
+            self._ema20_d = d_cl if self._ema20_d is None else (alpha20 * d_cl + (Decimal("1") - alpha20) * self._ema20_d)
+            self._ema50_d = d_cl if self._ema50_d is None else (alpha50 * d_cl + (Decimal("1") - alpha50) * self._ema50_d)
+            self._ema20_d_hist.append(self._ema20_d)
+            self._ema50_d_hist.append(self._ema50_d)
             self._cur_day_bars = []
 
-        if len(self._daily_closes) < 50 or len(self._bars) < max(26, self.params.channel_lookback + 2):
+        lb = self.params.channel_lookback
+        if len(self._daily_closes) < 55 or len(self._bars) < max(72, lb + 5):
+            return None
+        if bar.open_time_ms < self._trade_start_ms and bar.interval == "1h":
             return None
 
-        ema20_d = ema(self._daily_closes, 20)
-        ema50_d = ema(self._daily_closes, 50)
+        ema20_d = self._ema20_d
+        ema50_d = self._ema50_d
         last_d_close = self._daily_closes[-1]
         atr_d = self._calc_atr(self._daily_trs, 14)
         cur_atr_1h = self._calc_atr(self._trs_1h, 14)
         if atr_d <= Decimal("0") or cur_atr_1h <= Decimal("0"):
             return None
 
-        tick = self._tick_for(bar.symbol)
-        step_q = self._step_for(bar.symbol)
+        spec = self.ctx.data.get_symbol_spec(bar.exchange, bar.symbol)
+        tick = spec.tick_size
+        step_q = spec.step_size
         pos = self.ctx.get_position(bar.exchange, bar.symbol)
         pos_qty = pos.quantity if pos is not None else Decimal("0")
 
-        # 1) Manage Open Position (causal STOP_MARKET execution at real stop trigger price!)
+        # 1) Manage Open Position (causal STOP_MARKET execution at real stop trigger price)
         if pos_qty != Decimal("0"):
             is_long = pos_qty > Decimal("0")
             eff_atr = max(self._entry_atr, cur_atr_1h) if self.params.lock_entry_atr else cur_atr_1h
@@ -157,7 +172,7 @@ class DelphiStrategy(Strategy):
                 self._lowest = bar.low
 
             if self.params.enable_reversal_exit:
-                if is_long and last_d_close < ema50_d:
+                if is_long and last_d_close < ema50_d and ema20_d < ema50_d:
                     return [
                         Signal(
                             strategy_id=self.ctx.config.strategy_id,
@@ -171,7 +186,7 @@ class DelphiStrategy(Strategy):
                             ts_ms=self.ctx.now_ms,
                         )
                     ]
-                if (not is_long) and last_d_close > ema50_d:
+                if (not is_long) and last_d_close > ema50_d and ema20_d > ema50_d:
                     return [
                         Signal(
                             strategy_id=self.ctx.config.strategy_id,
@@ -185,23 +200,24 @@ class DelphiStrategy(Strategy):
                             ts_ms=self.ctx.now_ms,
                         )
                     ]
-                if (idx - self._entry_bar_idx) >= 30:
-                    mfe = (self._highest - self._entry_px) if is_long else (self._entry_px - self._lowest)
-                    unreal = (bar.close - self._entry_px) if is_long else (self._entry_px - bar.close)
-                    if mfe < self._entry_atr and unreal < Decimal("0"):
-                        return [
-                            Signal(
-                                strategy_id=self.ctx.config.strategy_id,
-                                exchange=bar.exchange,
-                                symbol=bar.symbol,
-                                action=SignalAction.CLOSE,
-                                order_type=OrderType.MARKET,
-                                quantity=abs(pos_qty),
-                                reduce_only=True,
-                                reason="delphi_time_stagnation_exit",
-                                ts_ms=self.ctx.now_ms,
-                            )
-                        ]
+
+            if self.params.enable_stagnation_exit and (idx - self._entry_bar_idx) >= 30:
+                mfe = (self._highest - self._entry_px) if is_long else (self._entry_px - self._lowest)
+                unreal = (bar.close - self._entry_px) if is_long else (self._entry_px - bar.close)
+                if mfe < self._entry_atr and unreal < Decimal("0"):
+                    return [
+                        Signal(
+                            strategy_id=self.ctx.config.strategy_id,
+                            exchange=bar.exchange,
+                            symbol=bar.symbol,
+                            action=SignalAction.CLOSE,
+                            order_type=OrderType.MARKET,
+                            quantity=abs(pos_qty),
+                            reduce_only=True,
+                            reason="delphi_time_stagnation_exit",
+                            ts_ms=self.ctx.now_ms,
+                        )
+                    ]
 
             # Update ratchet chandelier trailing stop
             if is_long:
@@ -218,29 +234,33 @@ class DelphiStrategy(Strategy):
                         self._stop_px = cand
             return None
 
-        # 2) Flat -> Evaluate 4 Entry Gates + Tiered Distance Corridor
-        allow_long = last_d_close > ema50_d and ema20_d > ema50_d
-        allow_short = last_d_close < ema50_d and ema20_d < ema50_d
+        # 2) Flat -> Evaluate 4 Entry Gates + Real-Market Regime Filters
+        slope_up = (not self.params.require_ema50_slope) or (ema50_d > self._ema50_d_hist[-4])
+        slope_dn = (not self.params.require_ema50_slope) or (
+            ema50_d < self._ema50_d_hist[-4] and ema20_d < self._ema20_d_hist[-4]
+        )
+        allow_long = last_d_close > ema50_d and ema20_d > ema50_d and slope_up
+        allow_short = last_d_close < ema50_d and ema20_d < ema50_d and slope_dn
         if not allow_long and not allow_short:
             return None
 
         dist_atr_d = abs(bar.close - ema50_d) / atr_d
-        if dist_atr_d <= self.params.min_dist_atr_d or dist_atr_d >= self.params.max_dist_atr_d:
+        eff_max_dist = self.params.max_dist_atr_d if allow_long else self.params.short_max_dist_atr_d
+        if dist_atr_d <= self.params.min_dist_atr_d or dist_atr_d >= eff_max_dist:
             return None
 
         in_extended = dist_atr_d >= self.params.soft_dist_atr_d
         zone_mult = self.params.extended_size_mult if in_extended else Decimal("1.0")
+        if allow_short:
+            zone_mult = zone_mult * self.params.short_size_mult
 
-        lb = self.params.channel_lookback
         prev_win = self._bars[-(lb + 1) : -1]
-        h_15 = max(x.high for x in prev_win)
-        l_15 = min(x.low for x in prev_win)
+        h_ch = max(x.high for x in prev_win)
+        l_ch = min(x.low for x in prev_win)
         prev_atr_1h = self._calc_atr(self._trs_1h[-15:-1], 14)
-        upper_ch = h_15 + self.params.channel_atr_mult * prev_atr_1h
-        lower_ch = l_15 - self.params.channel_atr_mult * prev_atr_1h
+        upper_ch = h_ch + self.params.channel_atr_mult * prev_atr_1h
+        lower_ch = l_ch - self.params.channel_atr_mult * prev_atr_1h
 
-        closes_1h = [x.close for x in self._bars[-26:]]
-        ema20_1h = ema(closes_1h, 20)
         rec6 = self._bars[-6:]
         pri6 = self._bars[-12:-6]
 
@@ -249,15 +269,18 @@ class DelphiStrategy(Strategy):
         if self.params.use_atr_risk_sizing:
             risk_usdt = eq_usdt * self.params.risk_pct * zone_mult
             raw_qty = risk_usdt / (self.params.init_stop_atr * cur_atr_1h)
-            max_qty = (eq_usdt * Decimal("0.85") * zone_mult) / bar.close
+            max_qty = (eq_usdt * Decimal("0.90") * zone_mult) / bar.close
             qty = min(raw_qty, max_qty).quantize(step_q, rounding=ROUND_DOWN)
         else:
             qty = ((eq_usdt * Decimal("0.65") * zone_mult) / bar.close).quantize(step_q, rounding=ROUND_DOWN)
-        if qty < step_q:
-            qty = step_q
+        if qty < spec.min_qty:
+            qty = spec.min_qty
 
-        if allow_long and bar.high > upper_ch:
-            if min(x.low for x in rec6) >= min(x.low for x in pri6) and bar.close > self._bars[-2].close and bar.close > ema20_1h:
+        brk_long = (bar.close > upper_ch) if self.params.require_close_breakout else (bar.high > upper_ch)
+        brk_short = (bar.close < lower_ch) if self.params.require_close_breakout else (bar.low < lower_ch)
+
+        if allow_long and brk_long:
+            if min(x.low for x in rec6) >= min(x.low for x in pri6) and bar.close > self._bars[-2].close and bar.close > self._ema20_1h:
                 self._entry_px = bar.close
                 self._entry_atr = cur_atr_1h
                 self._entry_bar_idx = idx
@@ -277,8 +300,8 @@ class DelphiStrategy(Strategy):
                     )
                 ]
 
-        if allow_short and bar.low < lower_ch:
-            if max(x.high for x in rec6) <= max(x.high for x in pri6) and bar.close < self._bars[-2].close and bar.close < ema20_1h:
+        if allow_short and brk_short:
+            if max(x.high for x in rec6) <= max(x.high for x in pri6) and bar.close < self._bars[-2].close and bar.close < self._ema20_1h:
                 self._entry_px = bar.close
                 self._entry_atr = cur_atr_1h
                 self._entry_bar_idx = idx
@@ -301,75 +324,185 @@ class DelphiStrategy(Strategy):
 '''
 
 
+SMA_WAVE_CODE = '''from collections import deque
+from decimal import Decimal, ROUND_DOWN
+from pydantic import BaseModel
+from quant_platform.core.enums import OrderType, SignalAction
+from quant_platform.core.interfaces import Strategy
+from quant_platform.core.models import Bar, Signal
+from quant_platform.strategy.ui_meta import ui_param
+
+
+class DualSmaParams(BaseModel):
+    fast_hours: int = ui_param(48, ge=12, le=120, ui_group="signal", unit="Hours", description="快线周期（48根1H = 2日均线）")
+    slow_hours: int = ui_param(240, ge=48, le=720, ui_group="signal", unit="Hours", description="慢线周期（240根1H = 10日均线）")
+    alloc_pct: Decimal = ui_param(Decimal("0.50"), ui_group="risk_sizing", unit="Ratio", danger_level="medium", description="每次趋势建仓占账户净值比例")
+
+
+class DualSmaWaveStrategy(Strategy):
+    ParamModel = DualSmaParams
+
+    def on_start(self):
+        self._closes = deque(maxlen=max(self.params.slow_hours + 5, 300))
+        self._prev_diff = None
+        return None
+
+    def on_bar(self, bar: Bar):
+        self._closes.append(bar.close)
+        slow_n = self.params.slow_hours
+        fast_n = self.params.fast_hours
+        if len(self._closes) < slow_n:
+            return None
+        arr = list(self._closes)
+        fast_ma = sum(arr[-fast_n:], Decimal("0")) / Decimal(fast_n)
+        slow_ma = sum(arr[-slow_n:], Decimal("0")) / Decimal(slow_n)
+        diff = fast_ma - slow_ma
+        prev = self._prev_diff
+        self._prev_diff = diff
+        if prev is None or bar.open_time_ms < 1704067200000:
+            return None
+
+        spec = self.ctx.data.get_symbol_spec(bar.exchange, bar.symbol)
+        pos = self.ctx.get_position(bar.exchange, bar.symbol)
+        pos_qty = pos.quantity if pos is not None else Decimal("0")
+
+        if prev <= Decimal("0") and diff > Decimal("0") and pos_qty <= Decimal("0"):
+            bal = self.ctx.get_balance(bar.exchange, "USDT")
+            eq = bal.total if bal is not None and bal.total > Decimal("0") else Decimal("10000")
+            qty = max(spec.min_qty, ((eq * self.params.alloc_pct) / bar.close).quantize(spec.step_size, rounding=ROUND_DOWN))
+            return [
+                Signal(
+                    strategy_id=self.ctx.config.strategy_id,
+                    exchange=bar.exchange,
+                    symbol=bar.symbol,
+                    action=SignalAction.BUY,
+                    order_type=OrderType.MARKET,
+                    quantity=qty + abs(pos_qty),
+                    reason="dual_sma_golden_cross",
+                    ts_ms=self.ctx.now_ms,
+                )
+            ]
+        if prev >= Decimal("0") and diff < Decimal("0") and pos_qty > Decimal("0"):
+            return [
+                Signal(
+                    strategy_id=self.ctx.config.strategy_id,
+                    exchange=bar.exchange,
+                    symbol=bar.symbol,
+                    action=SignalAction.CLOSE,
+                    order_type=OrderType.MARKET,
+                    quantity=abs(pos_qty),
+                    reduce_only=True,
+                    reason="dual_sma_death_cross_exit",
+                    ts_ms=self.ctx.now_ms,
+                )
+            ]
+        return None
+'''
+
+
 STRATEGY_SPECS = [
     {
         "strategy_id": "strat_delphi_v44",
-        "name": "Delphi II v4.4（原版逻辑）",
-        "description": "原版基准：真实24H日线聚合、无日线偏离上限(999)、空单移动止损0.5 ATR、实时ATR、固定65%名义仓位",
-        "note": "原版基准已审核",
+        "name": "Delphi II v4.4（原版基准）",
+        "description": "原版规格在币安真实1H永续K线(2024–2026)上的对照基准：15h窄通道盘中最高价突破、无偏离上限、2.0/0.5×1H_ATR超窄止损导致月均11笔高频磨损",
+        "note": "真实行情原版对照基准已审核",
+        "code": DELPHI_STRATEGY_CODE,
         "params": {
             "bars_per_day": 24,
             "min_dist_atr_d": "1.0",
             "soft_dist_atr_d": "999.0",
             "max_dist_atr_d": "999.0",
+            "short_max_dist_atr_d": "999.0",
             "extended_size_mult": "1.0",
+            "short_size_mult": "1.0",
             "channel_lookback": 15,
             "channel_atr_mult": "0.45",
+            "require_close_breakout": False,
+            "require_ema50_slope": False,
             "init_stop_atr": "3.5",
             "trail_activate_atr": "1.5",
             "long_trail_atr": "2.0",
             "short_trail_atr": "0.5",
             "lock_entry_atr": False,
             "enable_reversal_exit": False,
+            "enable_stagnation_exit": False,
             "use_atr_risk_sizing": False,
-            "risk_pct": "0.055",
+            "risk_pct": "0.045",
         },
+        "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
     },
     {
         "strategy_id": "strat_delphi_v45",
-        "name": "Delphi II v4.5（一刀切风控版）",
-        "description": "第一版保守优化：偏离>=3.5 ATR_D硬性禁开（防追顶但易踏空二段主升/瀑布）、空单1.8 ATR、2.5%保守风险预算",
-        "note": "一刀切风控版已审核",
+        "name": "Delphi II v4.5（1H风控收窄版）",
+        "description": "第一阶段优化：加入3.5 ATR_D偏离硬上限、空单1.8 ATR与锁开仓ATR，回撤显著下降但15h通道与2.0×1H_ATR止损仍偏窄",
+        "note": "第一阶段风控版已审核",
+        "code": DELPHI_STRATEGY_CODE,
         "params": {
             "bars_per_day": 24,
             "min_dist_atr_d": "1.0",
             "soft_dist_atr_d": "3.5",
             "max_dist_atr_d": "3.5",
+            "short_max_dist_atr_d": "3.5",
             "extended_size_mult": "1.0",
+            "short_size_mult": "1.0",
             "channel_lookback": 15,
             "channel_atr_mult": "0.45",
+            "require_close_breakout": False,
+            "require_ema50_slope": False,
             "init_stop_atr": "3.5",
             "trail_activate_atr": "1.5",
             "long_trail_atr": "2.0",
             "short_trail_atr": "1.8",
             "lock_entry_atr": True,
             "enable_reversal_exit": True,
+            "enable_stagnation_exit": True,
             "use_atr_risk_sizing": True,
             "risk_pct": "0.025",
         },
+        "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
     },
     {
         "strategy_id": "strat_delphi_v46",
-        "name": "Delphi II v4.6（分段仓位防踏空版）",
-        "description": "终版增强：标准走廊[1.0, 3.8)满额风险预算 + 延续走廊[3.8, 8.5)按0.60x降仓防踏空 + 空单1.8 ATR + 锁开仓ATR + 反转/停滞离场",
-        "note": "分段防踏空增强版已审核",
+        "name": "Delphi II v4.6（真实行情波段增强版）",
+        "description": "基于2021–2023真实行情样本内定参、2024–2026严格样本外盲测：48H实体收盘突破 + 日线EMA50斜率过滤 + 8.0/5.0×1H_ATR吊灯波段止损 + 分段/多空非对称定仓",
+        "note": "真实行情样本外验证增强版已审核",
+        "code": DELPHI_STRATEGY_CODE,
         "params": {
             "bars_per_day": 24,
-            "min_dist_atr_d": "1.0",
-            "soft_dist_atr_d": "3.8",
-            "max_dist_atr_d": "8.5",
-            "extended_size_mult": "0.60",
-            "channel_lookback": 15,
-            "channel_atr_mult": "0.45",
-            "init_stop_atr": "3.5",
-            "trail_activate_atr": "1.5",
-            "long_trail_atr": "2.0",
-            "short_trail_atr": "1.8",
+            "min_dist_atr_d": "0.20",
+            "soft_dist_atr_d": "2.8",
+            "max_dist_atr_d": "6.0",
+            "short_max_dist_atr_d": "3.2",
+            "extended_size_mult": "0.55",
+            "short_size_mult": "0.50",
+            "channel_lookback": 48,
+            "channel_atr_mult": "0.10",
+            "require_close_breakout": True,
+            "require_ema50_slope": True,
+            "init_stop_atr": "5.0",
+            "trail_activate_atr": "3.5",
+            "long_trail_atr": "8.0",
+            "short_trail_atr": "5.0",
             "lock_entry_atr": True,
             "enable_reversal_exit": True,
+            "enable_stagnation_exit": False,
             "use_atr_risk_sizing": True,
-            "risk_pct": "0.055",
+            "risk_pct": "0.045",
         },
+        "symbols": ["ETH/USDT:USDT", "SOL/USDT:USDT", "BTC/USDT:USDT"],
+    },
+    {
+        "strategy_id": "strat_btc_sma_wave",
+        "name": "BTC 经典双均线趋势模板（2日/10日均线）",
+        "description": "新手入门模板：在币安真实BTC/USDT永续1H历史K线(2024–2026)上运行48H/240H双均线金叉做多、死叉平仓",
+        "note": "入门模板已审核",
+        "code": SMA_WAVE_CODE,
+        "params": {
+            "fast_hours": 48,
+            "slow_hours": 240,
+            "alloc_pct": "0.50",
+        },
+        "symbols": ["BTC/USDT:USDT"],
     },
 ]
 
@@ -378,9 +511,9 @@ def main() -> None:
     headers = {"X-API-Key": "admin-dev-token"}
     base = "http://127.0.0.1:8000"
 
-    with httpx.Client(base_url=base, headers=headers, timeout=180.0) as c:
+    with httpx.Client(base_url=base, headers=headers, timeout=300.0) as c:
         existing = {s["strategy_id"] for s in c.get("/api/v1/strategies").json()}
-        run_ids: dict[str, str] = {}
+        run_ids: dict[str, dict[str, str]] = {}
 
         for spec in STRATEGY_SPECS:
             sid = spec["strategy_id"]
@@ -391,7 +524,7 @@ def main() -> None:
                         "strategy_id": sid,
                         "name": spec["name"],
                         "description": spec["description"],
-                        "code": DELPHI_STRATEGY_CODE,
+                        "code": spec["code"],
                         "params": spec["params"],
                     },
                 )
@@ -399,45 +532,37 @@ def main() -> None:
                 vid = r.json()["version_id"]
                 c.post(f"/api/v1/strategies/versions/{vid}/approve", json={"note": spec["note"]}).raise_for_status()
 
-            bt = c.post(
-                "/api/v1/runs/launch",
-                json={
-                    "strategy_id": sid,
-                    "version_id": f"{sid}:v1",
-                    "env": "backtest",
-                    "exchange": "binance",
-                    "symbol": "SOL/USDT:USDT",
-                    "initial_usdt": "10000",
-                    "async_mode": False,
-                },
-            )
-            bt.raise_for_status()
-            run_ids[sid] = bt.json()["run_id"]
+            run_ids[sid] = {}
+            for sym in spec["symbols"]:
+                bt = c.post(
+                    "/api/v1/runs/launch",
+                    json={
+                        "strategy_id": sid,
+                        "version_id": f"{sid}:v1",
+                        "env": "backtest",
+                        "exchange": "binance",
+                        "symbol": sym,
+                        "initial_usdt": "10000",
+                        "async_mode": False,
+                    },
+                )
+                bt.raise_for_status()
+                run_ids[sid][sym] = bt.json()["run_id"]
 
-        # Run Parameter Sensitivity Heatmap on v4.6 across short_trail_atr x max_dist_atr_d
-        sens = c.post(
-            f"/api/v1/runs/backtest/{run_ids['strat_delphi_v46']}/sensitivity",
-            json={
-                "param_x_name": "short_trail_atr",
-                "param_x_values": ["0.5", "1.0", "1.5", "1.8", "2.2"],
-                "param_y_name": "max_dist_atr_d",
-                "param_y_values": ["3.5", "8.5", "999.0"],
-            },
-        )
-        sens.raise_for_status()
-
-        strat_map = {s["strategy_id"]: s["latest_backtest_metrics"] for s in c.get("/api/v1/strategies").json()}
         summary_out = {}
-        for sid, rid in run_ids.items():
-            rep = c.get(f"/api/v1/runs/backtest/{rid}/report").json()
-            summary_out[sid] = {
-                "run_id": rid,
-                "metrics": strat_map.get(sid),
-                "summary_metrics": rep.get("summary_metrics"),
-                "trade_metrics": rep.get("trade_metrics"),
-                "weaknesses": rep.get("weaknesses"),
-            }
-        summary_out["sensitivity_cells"] = sens.json()["cells"]
+        for sid, sym_map in run_ids.items():
+            summary_out[sid] = {}
+            for sym, rid in sym_map.items():
+                rep = c.get(f"/api/v1/runs/backtest/{rid}/report").json()
+                summary_out[sid][sym] = {
+                    "run_id": rid,
+                    "final_equity": rep.get("final_equity"),
+                    "net_pnl": rep.get("net_pnl"),
+                    "total_fees": rep.get("total_fees"),
+                    "total_funding": rep.get("total_funding"),
+                    "summary_metrics": rep.get("summary_metrics"),
+                    "trade_metrics": rep.get("trade_metrics"),
+                }
         print(json.dumps(summary_out, ensure_ascii=False, indent=2))
 
 
