@@ -1,0 +1,101 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quant_secret_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-quant_platform}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-quant} -d $${POSTGRES_DB:-quant_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      QUANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
+      QUANT_REDIS_URL: redis://redis:6379/0
+      QP_VIEWER_API_KEY: ${QP_VIEWER_API_KEY:-viewer-dev-token}
+      QP_RESEARCHER_API_KEY: ${QP_RESEARCHER_API_KEY:-researcher-dev-token}
+      QP_OPERATOR_API_KEY: ${QP_OPERATOR_API_KEY:-operator-dev-token}
+      QP_ADMIN_API_KEY: ${QP_ADMIN_API_KEY:-admin-dev-token}
+      TZ: UTC
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    command: ["python", "-m", "quant_platform.observability.worker_main"]
+    environment:
+      QUANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
+      QUANT_REDIS_URL: redis://redis:6379/0
+      TZ: UTC
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.ui
+    restart: unless-stopped
+    environment:
+      BACKEND_INTERNAL_URL: http://api:8000
+      TZ: UTC
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+volumes:
+  pg_data:
+  redis_data:
+  prom_data:
