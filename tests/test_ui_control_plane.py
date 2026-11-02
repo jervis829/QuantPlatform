@@ -434,3 +434,116 @@ def test_real_historical_binance_klines_match_authentic_market_prices() -> None:
     assert str(sol_spec.tick_size) == "0.001"
 
 
+def test_delphi_v50_sr_fractal_and_v47_regression() -> None:
+    from quant_platform.strategy.ast_checker import ASTSecurityChecker
+    from scripts.seed_delphi_strategies import DELPHI_STRATEGY_CODE, STRATEGY_SPECS
+
+    ASTSecurityChecker().assert_safe(DELPHI_STRATEGY_CODE)
+
+    app = create_app("sqlite:///:memory:")
+    client = TestClient(app)
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+    specs = {s["strategy_id"]: s for s in STRATEGY_SPECS}
+
+    # 1) Upload & approve v5.0 -> verify schema exposes S/R + Top/Bottom Fractal parameters
+    sp50 = specs["strat_delphi_v50"]
+    up50 = client.post(
+        "/api/v1/strategies/upload",
+        headers=admin_hdr,
+        json={
+            "strategy_id": sp50["strategy_id"],
+            "name": sp50["name"],
+            "description": sp50["description"],
+            "code": sp50["code"],
+            "params": sp50["params"],
+        },
+    )
+    assert up50.status_code == 200
+    v50_body = up50.json()
+    props = (v50_body.get("param_schema") or {}).get("properties") or {}
+    for expected_key in (
+        "enable_sr_fractal_entry",
+        "enable_breakout_entry",
+        "fractal_tf_bars",
+        "sr_touch_atr",
+        "sr_stop_n_atr",
+    ):
+        assert expected_key in props
+
+    vid50 = v50_body["version_id"]
+    ap50 = client.post(
+        f"/api/v1/strategies/versions/{vid50}/approve",
+        headers=admin_hdr,
+        json={"note": sp50["note"]},
+    )
+    assert ap50.status_code == 200
+
+    # Launch real ETH/USDT:USDT backtest on v5.0 and verify S/R + Fractal metrics & chart markers
+    bt50 = client.post(
+        "/api/v1/runs/launch",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_delphi_v50",
+            "version_id": vid50,
+            "env": "backtest",
+            "exchange": "binance",
+            "symbol": "ETH/USDT:USDT",
+            "initial_usdt": "10000",
+            "async_mode": False,
+        },
+    )
+    assert bt50.status_code == 200
+    rid50 = bt50.json()["run_id"]
+    rep50 = client.get(f"/api/v1/runs/backtest/{rid50}/report", headers=admin_hdr).json()
+    sm50 = rep50["summary_metrics"]
+    tm50 = rep50["trade_metrics"]
+    assert float(sm50["final_equity"]) > 18000.0
+    assert float(sm50["max_drawdown"]) > -0.22
+    assert float(sm50["sharpe"]) > 1.20
+    assert tm50["closed_trade_count"] == 49
+
+    chart50 = client.get(f"/api/v1/runs/backtest/{rid50}/chart-data", headers=admin_hdr)
+    assert chart50.status_code == 200
+    c50_body = chart50.json()
+    assert len(c50_body["bars"]) == 23760
+    assert len(c50_body["trade_markers"]) >= 90
+    reasons50 = {m["signal_reason"] for m in c50_body["trade_markers"]}
+    assert "delphi_v5_long_sr_bottom_fractal" in reasons50
+    assert "delphi_v5_short_sr_top_fractal" in reasons50
+
+    # 2) Verify v4.7 bit-for-bit regression on BTC/USDT:USDT
+    sp47 = specs["strat_delphi_v47"]
+    up47 = client.post(
+        "/api/v1/strategies/upload",
+        headers=admin_hdr,
+        json={
+            "strategy_id": sp47["strategy_id"],
+            "name": sp47["name"],
+            "description": sp47["description"],
+            "code": sp47["code"],
+            "params": sp47["params"],
+        },
+    )
+    assert up47.status_code == 200
+    vid47 = up47.json()["version_id"]
+    client.post(f"/api/v1/strategies/versions/{vid47}/approve", headers=admin_hdr, json={"note": sp47["note"]})
+    bt47 = client.post(
+        "/api/v1/runs/launch",
+        headers=admin_hdr,
+        json={
+            "strategy_id": "strat_delphi_v47",
+            "version_id": vid47,
+            "env": "backtest",
+            "exchange": "binance",
+            "symbol": "BTC/USDT:USDT",
+            "initial_usdt": "10000",
+            "async_mode": False,
+        },
+    )
+    assert bt47.status_code == 200
+    rid47 = bt47.json()["run_id"]
+    rep47 = client.get(f"/api/v1/runs/backtest/{rid47}/report", headers=admin_hdr).json()
+    assert rep47["summary_metrics"]["final_equity"] == "15329.19915186465"
+
+
+

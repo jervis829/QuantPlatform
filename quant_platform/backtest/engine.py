@@ -359,9 +359,9 @@ class BacktestEngine:
                     _dispatch_intents(strategy.on_bar(b))
 
                 should_flush = (step_idx % report_stride == 0) or (step_idx == total_steps)
-                eq_pt = broker.snapshot_equity(default_ex, flush=False)
-                equity_points.append(eq_pt)
                 record_bal = (total_steps <= 2000) or (step_idx % 24 == 0) or should_flush
+                eq_pt = broker.snapshot_equity(default_ex, flush=False, persist=record_bal)
+                equity_points.append(eq_pt)
                 if record_bal:
                     for bal in broker.query_balance(default_ex):
                         ledger.record_balance_snapshot(bal, flush=False)

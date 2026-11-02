@@ -1,8 +1,9 @@
 """
 Seeds AST-safe Delphi II v4.4 (Original Baseline), Delphi II v4.5 (1H Narrow-Stop Cap),
-Delphi II v4.6 (Real-Market 48H Swing Enhancement), and BTC Dual-SMA Starter Template into
-the live QuantPlatform API and runs real historical Binance USDT-M Perpetual backtests
-(2023-10-15 .. 2026-07-01 UTC, 23,760 1H bars + 2,970 8H funding settlements).
+Delphi II v4.6 (Real-Market 48H Swing Enhancement), Delphi II v4.7 (Short Anti-Squeeze),
+Delphi II v5.0 (Macro Trend + S/R Pullback + Causal Inclusion-Merged Top/Bottom Fractal),
+and BTC Dual-SMA Starter Template into the live QuantPlatform API and runs real historical
+Binance USDT-M Perpetual backtests (2023-10-15 .. 2026-07-01 UTC, 23,760 1H bars + 2,970 8H funding).
 """
 
 from __future__ import annotations
@@ -31,6 +32,16 @@ class DelphiParams(BaseModel):
     channel_atr_mult: Decimal = ui_param(Decimal("0.10"), ui_group="signal", unit="ATR", description="1H通道突破外扩ATR缓冲倍数")
     require_close_breakout: bool = ui_param(True, ui_group="signal", description="要求1H实体收盘价站上突破通道（过滤盘中假突破插针诱多/诱空）")
     require_ema50_slope: bool = ui_param(True, ui_group="signal", description="要求日线EMA50斜率与开仓方向一致（过滤震荡期均线横盘假信号）")
+    enable_breakout_entry: bool = ui_param(True, ui_group="signal", description="启用1H波段箱体突破入场（v4.4–v4.7默认主引擎；v5.0可关闭切换为纯回踩分型或双擎共振）")
+    enable_sr_fractal_entry: bool = ui_param(False, ui_group="signal", description="启用v5.0大趋势支撑/阻力位回踩 + 缠论包含处理顶/底分型颈线右侧确认入场")
+    fractal_tf_bars: int = ui_param(3, ge=1, le=8, ui_group="signal", unit="Bars", description="分型K线聚合周期（3根1H=3H级别分型，自动执行缠论K线包含关系合并去噪）")
+    sr_touch_atr: Decimal = ui_param(Decimal("1.2"), ui_group="signal", unit="ATR_1H", description="分型极值触及日线EMA20/EMA50或48H破位顶底转换颈线的最大容差倍数")
+    min_pullback_atr: Decimal = ui_param(Decimal("2.5"), ui_group="signal", unit="ATR_1H", description="距近96H波段极值的最小有效回调/反抽幅度（过滤无深度横盘假分型）")
+    sr_stop_n_atr: Decimal = ui_param(Decimal("2.5"), ui_group="risk_sizing", unit="ATR_1H", description="结构止损置于支撑/阻力位（及分型极值）外侧 n × 1H_ATR 的缓冲倍数")
+    sr_min_stop_atr: Decimal = ui_param(Decimal("3.5"), ui_group="risk_sizing", unit="ATR_1H", description="结构止损最小呼吸空间下限（防止过窄止损被1H插针扫损或虚增名义杠杆）")
+    sr_max_stop_atr: Decimal = ui_param(Decimal("6.0"), ui_group="risk_sizing", unit="ATR_1H", description="结构止损最大风险宽度上限（过滤形态过大导致盈亏比劣化信号）")
+    one_pb_per_impulse: bool = ui_param(True, ui_group="signal", description="单轮48H趋势脉冲仅允许首次有效支撑/阻力分型入场（避免中枢震荡反复试错）")
+    fractal_arm_bars: int = ui_param(36, ge=6, le=96, ui_group="signal", unit="Bars", description="顶/底分型确立后等待1H实体突破分型颈线的最大有效K线根数")
     init_stop_atr: Decimal = ui_param(Decimal("5.0"), ui_group="risk_sizing", unit="ATR_1H", description="初始硬止损距离（1H ATR倍数）")
     trail_activate_atr: Decimal = ui_param(Decimal("3.5"), ui_group="risk_sizing", unit="ATR_1H", description="移动止损激活浮盈阈值（1H ATR倍数）")
     long_trail_atr: Decimal = ui_param(Decimal("8.0"), ui_group="risk_sizing", unit="ATR_1H", description="多单吊灯移动止损回撤距离（v4.4=2.0易被洗出，v4.6=8.0吃满周线主升浪）")
@@ -71,6 +82,14 @@ class DelphiStrategy(Strategy):
         self._lowest = Decimal("0")
         self._lowest_close = Decimal("0")
         self._tp1_done = False
+        self._fractal_tf_buf = []
+        self._cl_merged = []
+        self._armed_long = None
+        self._armed_short = None
+        self._bull_impulse_ready = False
+        self._bull_neck_px = None
+        self._bear_impulse_ready = False
+        self._bear_neck_px = None
         self._trade_start_ms = 1704067200000  # 2024-01-01 00:00:00 UTC after 2023 Q4 warm-up
         return None
 
@@ -97,6 +116,39 @@ class DelphiStrategy(Strategy):
         else:
             self._ema20_1h = alpha20 * bar.close + (Decimal("1") - alpha20) * self._ema20_1h
 
+        # Causal Multi-Hour Aggregation + Chanlun Inclusion Merging (包含关系合并顶/底分型)
+        new_fractal = None
+        if self.params.enable_sr_fractal_entry:
+            self._fractal_tf_buf.append((bar.high, bar.low, bar.close, idx))
+            if len(self._fractal_tf_buf) >= self.params.fractal_tf_bars:
+                thi = max(x[0] for x in self._fractal_tf_buf)
+                tlo = min(x[1] for x in self._fractal_tf_buf)
+                tcl = self._fractal_tf_buf[-1][2]
+                tidx = self._fractal_tf_buf[-1][3]
+                self._fractal_tf_buf = []
+                if not self._cl_merged:
+                    self._cl_merged.append([thi, tlo, tcl, tidx])
+                else:
+                    ph, pl, pc, pidx = self._cl_merged[-1]
+                    if (thi <= ph and tlo >= pl) or (thi >= ph and tlo <= pl):
+                        up_dir = True if len(self._cl_merged) < 2 else (ph >= self._cl_merged[-2][0])
+                        if up_dir:
+                            self._cl_merged[-1] = [max(thi, ph), max(tlo, pl), tcl, tidx]
+                        else:
+                            self._cl_merged[-1] = [min(thi, ph), min(tlo, pl), tcl, tidx]
+                    else:
+                        self._cl_merged.append([thi, tlo, tcl, tidx])
+                        if len(self._cl_merged) > 32:
+                            self._cl_merged.pop(0)
+                        if len(self._cl_merged) >= 3:
+                            k1 = self._cl_merged[-3]
+                            k2 = self._cl_merged[-2]
+                            k3 = self._cl_merged[-1]
+                            if k2[1] < k1[1] and k2[1] < k3[1] and k2[0] < k1[0] and k2[0] < k3[0]:
+                                new_fractal = ("BOT", k2[0], k2[1], k2[3])
+                            elif k2[0] > k1[0] and k2[0] > k3[0] and k2[1] > k1[1] and k2[1] > k3[1]:
+                                new_fractal = ("TOP", k2[0], k2[1], k2[3])
+
         # Roll closed 24H UTC Daily candles strictly without lookahead
         self._cur_day_bars.append(bar)
         bpd = self.params.bars_per_day
@@ -118,14 +170,41 @@ class DelphiStrategy(Strategy):
             self._cur_day_bars = []
 
         lb = self.params.channel_lookback
-        if len(self._daily_closes) < 55 or len(self._bars) < max(72, lb + 5):
-            return None
-        if bar.open_time_ms < self._trade_start_ms and bar.interval == "1h":
+        min_bars_req = max(241, lb + 5) if self.params.enable_sr_fractal_entry else max(72, lb + 5)
+        if len(self._daily_closes) < 55 or len(self._bars) < min_bars_req:
             return None
 
         ema20_d = self._ema20_d
         ema50_d = self._ema50_d
         last_d_close = self._daily_closes[-1]
+        slope_up = (not self.params.require_ema50_slope) or (ema50_d > self._ema50_d_hist[-4])
+        slope_dn = (not self.params.require_ema50_slope) or (
+            ema50_d < self._ema50_d_hist[-4] and ema20_d < self._ema20_d_hist[-4]
+        )
+        allow_long = last_d_close > ema50_d and ema20_d > ema50_d and slope_up
+        allow_short = last_d_close < ema50_d and ema20_d < ema50_d and slope_dn
+
+        prev_win = self._bars[-(lb + 1) : -1]
+        h_ch = max(x.high for x in prev_win)
+        l_ch = min(x.low for x in prev_win)
+
+        if self.params.enable_sr_fractal_entry:
+            if allow_long and bar.close > h_ch:
+                self._bull_impulse_ready = True
+                self._bull_neck_px = h_ch
+            if not allow_long:
+                self._bull_impulse_ready = False
+                self._bull_neck_px = None
+            if allow_short and bar.close < l_ch:
+                self._bear_impulse_ready = True
+                self._bear_neck_px = l_ch
+            if not allow_short:
+                self._bear_impulse_ready = False
+                self._bear_neck_px = None
+
+        if bar.open_time_ms < self._trade_start_ms and bar.interval == "1h":
+            return None
+
         atr_d = self._calc_atr(self._daily_trs, 14)
         cur_atr_1h = self._calc_atr(self._trs_1h, 14)
         if atr_d <= Decimal("0") or cur_atr_1h <= Decimal("0"):
@@ -139,6 +218,8 @@ class DelphiStrategy(Strategy):
 
         # 1) Manage Open Position (causal STOP_MARKET execution at real stop trigger price)
         if pos_qty != Decimal("0"):
+            self._armed_long = None
+            self._armed_short = None
             is_long = pos_qty > Decimal("0")
             eff_atr = max(self._entry_atr, cur_atr_1h) if self.params.lock_entry_atr else cur_atr_1h
 
@@ -300,15 +381,50 @@ class DelphiStrategy(Strategy):
                             ]
             return None
 
-        # 2) Flat -> Evaluate 4 Entry Gates + Real-Market Regime Filters
-        slope_up = (not self.params.require_ema50_slope) or (ema50_d > self._ema50_d_hist[-4])
-        slope_dn = (not self.params.require_ema50_slope) or (
-            ema50_d < self._ema50_d_hist[-4] and ema20_d < self._ema20_d_hist[-4]
-        )
-        allow_long = last_d_close > ema50_d and ema20_d > ema50_d and slope_up
-        allow_short = last_d_close < ema50_d and ema20_d < ema50_d and slope_dn
+        # 2) Flat -> Evaluate Macro Trend, S/R + Top/Bottom Fractal, and/or Breakout Entry Gates
+        if self._armed_long is not None and (
+            bar.low < self._armed_long["f_lo"] or idx > self._armed_long["exp_idx"] or not allow_long
+        ):
+            self._armed_long = None
+        if self._armed_short is not None and (
+            bar.high > self._armed_short["f_hi"] or idx > self._armed_short["exp_idx"] or not allow_short
+        ):
+            self._armed_short = None
+
         if not allow_long and not allow_short:
             return None
+
+        if self.params.enable_sr_fractal_entry and new_fractal is not None:
+            ftype, f_hi, f_lo, fidx = new_fractal
+            pb_win = self._bars[-97:-1]
+            hi_96 = max(x.high for x in pb_win)
+            lo_96 = min(x.low for x in pb_win)
+            if allow_long and ftype == "BOT" and ((not self.params.one_pb_per_impulse) or self._bull_impulse_ready):
+                sup_levels = [ema20_d, ema50_d] + (
+                    [self._bull_neck_px] if self._bull_neck_px is not None else []
+                )
+                hits = [lv for lv in sup_levels if abs(f_lo - lv) <= self.params.sr_touch_atr * cur_atr_1h]
+                if hits and (hi_96 - f_lo) >= self.params.min_pullback_atr * cur_atr_1h:
+                    sup_px = min(min(hits), f_lo)
+                    self._armed_long = {
+                        "f_hi": f_hi,
+                        "f_lo": f_lo,
+                        "sup_px": sup_px,
+                        "exp_idx": idx + self.params.fractal_arm_bars,
+                    }
+            elif allow_short and ftype == "TOP" and ((not self.params.one_pb_per_impulse) or self._bear_impulse_ready):
+                res_levels = [ema20_d, ema50_d] + (
+                    [self._bear_neck_px] if self._bear_neck_px is not None else []
+                )
+                hits = [lv for lv in res_levels if abs(f_hi - lv) <= self.params.sr_touch_atr * cur_atr_1h]
+                if hits and (f_hi - lo_96) >= self.params.min_pullback_atr * cur_atr_1h:
+                    res_px = max(max(hits), f_hi)
+                    self._armed_short = {
+                        "f_hi": f_hi,
+                        "f_lo": f_lo,
+                        "res_px": res_px,
+                        "exp_idx": idx + self.params.fractal_arm_bars,
+                    }
 
         dist_atr_d = abs(bar.close - ema50_d) / atr_d
         eff_max_dist = self.params.max_dist_atr_d if allow_long else self.params.short_max_dist_atr_d
@@ -320,9 +436,106 @@ class DelphiStrategy(Strategy):
         if allow_short:
             zone_mult = zone_mult * self.params.short_size_mult
 
-        prev_win = self._bars[-(lb + 1) : -1]
-        h_ch = max(x.high for x in prev_win)
-        l_ch = min(x.low for x in prev_win)
+        bal = self.ctx.get_balance(bar.exchange, "USDT")
+        eq_usdt = bal.total if bal is not None and bal.total > Decimal("0") else Decimal("10000")
+
+        # 2A) v5.0 S/R Pullback + Inclusion-Merged Top/Bottom Fractal Right-Side Entry (S/R ± n * ATR Stop)
+        if self.params.enable_sr_fractal_entry:
+            if allow_long and self._armed_long is not None:
+                if (
+                    bar.close > self._armed_long["f_hi"]
+                    and bar.close > self._ema20_1h
+                    and bar.close > self._bars[-2].close
+                ):
+                    raw_stop = self._armed_long["sup_px"] - self.params.sr_stop_n_atr * cur_atr_1h
+                    stop_dist = min(
+                        max(bar.close - raw_stop, self.params.sr_min_stop_atr * cur_atr_1h),
+                        self.params.sr_max_stop_atr * cur_atr_1h,
+                    )
+                    if self.params.use_atr_risk_sizing:
+                        risk_usdt = eq_usdt * self.params.risk_pct * zone_mult
+                        sizing_denom = max(stop_dist, self.params.init_stop_atr * cur_atr_1h)
+                        raw_qty = risk_usdt / sizing_denom
+                        max_qty = (eq_usdt * Decimal("0.90") * zone_mult) / bar.close
+                        pb_qty = min(raw_qty, max_qty).quantize(step_q, rounding=ROUND_DOWN)
+                    else:
+                        pb_qty = ((eq_usdt * Decimal("0.65") * zone_mult) / bar.close).quantize(
+                            step_q, rounding=ROUND_DOWN
+                        )
+                    if pb_qty < spec.min_qty:
+                        pb_qty = spec.min_qty
+                    self._entry_px = bar.close
+                    self._entry_atr = cur_atr_1h
+                    self._entry_bar_idx = idx
+                    self._highest = bar.high
+                    self._lowest = bar.low
+                    self._stop_px = bar.close - stop_dist
+                    self._armed_long = None
+                    self._bull_impulse_ready = False
+                    return [
+                        Signal(
+                            strategy_id=self.ctx.config.strategy_id,
+                            exchange=bar.exchange,
+                            symbol=bar.symbol,
+                            action=SignalAction.BUY,
+                            order_type=OrderType.MARKET,
+                            quantity=pb_qty,
+                            reason="delphi_v5_long_sr_bottom_fractal",
+                            ts_ms=self.ctx.now_ms,
+                        )
+                    ]
+
+            if allow_short and self._armed_short is not None:
+                if (
+                    bar.close < self._armed_short["f_lo"]
+                    and bar.close < self._ema20_1h
+                    and bar.close < self._bars[-2].close
+                ):
+                    raw_stop = self._armed_short["res_px"] + self.params.sr_stop_n_atr * cur_atr_1h
+                    stop_dist = min(
+                        max(raw_stop - bar.close, self.params.sr_min_stop_atr * cur_atr_1h),
+                        self.params.sr_max_stop_atr * cur_atr_1h,
+                    )
+                    if self.params.use_atr_risk_sizing:
+                        risk_usdt = eq_usdt * self.params.risk_pct * zone_mult
+                        sizing_denom = max(stop_dist, self.params.init_stop_atr * cur_atr_1h)
+                        raw_qty = risk_usdt / sizing_denom
+                        max_qty = (eq_usdt * Decimal("0.90") * zone_mult) / bar.close
+                        pb_qty = min(raw_qty, max_qty).quantize(step_q, rounding=ROUND_DOWN)
+                    else:
+                        pb_qty = ((eq_usdt * Decimal("0.65") * zone_mult) / bar.close).quantize(
+                            step_q, rounding=ROUND_DOWN
+                        )
+                    if pb_qty < spec.min_qty:
+                        pb_qty = spec.min_qty
+                    self._entry_px = bar.close
+                    self._entry_atr = cur_atr_1h
+                    self._entry_bar_idx = idx
+                    self._highest = bar.high
+                    self._lowest = bar.low
+                    self._lowest_close = bar.close
+                    self._tp1_done = False
+                    self._stop_px = bar.close + stop_dist
+                    self._trail_px = self._stop_px
+                    self._armed_short = None
+                    self._bear_impulse_ready = False
+                    return [
+                        Signal(
+                            strategy_id=self.ctx.config.strategy_id,
+                            exchange=bar.exchange,
+                            symbol=bar.symbol,
+                            action=SignalAction.SELL,
+                            order_type=OrderType.MARKET,
+                            quantity=pb_qty,
+                            reason="delphi_v5_short_sr_top_fractal",
+                            ts_ms=self.ctx.now_ms,
+                        )
+                    ]
+
+        if not self.params.enable_breakout_entry:
+            return None
+
+        # 2B) Donchian Swing Breakout Entry (v4.4–v4.7 Default Engine / Optional v5.0 Dual Engine)
         prev_atr_1h = self._calc_atr(self._trs_1h[-15:-1], 14)
         upper_ch = h_ch + self.params.channel_atr_mult * prev_atr_1h
         lower_ch = l_ch - self.params.channel_atr_mult * prev_atr_1h
@@ -330,8 +543,6 @@ class DelphiStrategy(Strategy):
         rec6 = self._bars[-6:]
         pri6 = self._bars[-12:-6]
 
-        bal = self.ctx.get_balance(bar.exchange, "USDT")
-        eq_usdt = bal.total if bal is not None and bal.total > Decimal("0") else Decimal("10000")
         if self.params.use_atr_risk_sizing:
             risk_usdt = eq_usdt * self.params.risk_pct * zone_mult
             raw_qty = risk_usdt / (self.params.init_stop_atr * cur_atr_1h)
@@ -609,6 +820,52 @@ STRATEGY_SPECS = [
         },
         "symbols": ["ETH/USDT:USDT", "SOL/USDT:USDT", "BTC/USDT:USDT"],
     },
+    {
+        "strategy_id": "strat_delphi_v50",
+        "name": "Delphi II v5.0（支撑阻力+缠论分型结构版）",
+        "description": "大趋势判断 + 首次回踩支撑/阻力位(日线EMA20/EMA50及48H破位顶底转换颈线) + 3H缠论包含合并顶/底分型颈线右侧确认入场 + 支撑/阻力位外侧2.5×ATR结构硬止损（兼具一键切换双擎共振）",
+        "note": "v5.0大趋势+支撑阻力+缠论顶底分型结构版已审核",
+        "code": DELPHI_STRATEGY_CODE,
+        "params": {
+            "bars_per_day": 24,
+            "min_dist_atr_d": "0.20",
+            "soft_dist_atr_d": "2.8",
+            "max_dist_atr_d": "5.5",
+            "short_max_dist_atr_d": "3.4",
+            "extended_size_mult": "0.55",
+            "short_size_mult": "0.50",
+            "channel_lookback": 48,
+            "channel_atr_mult": "0.10",
+            "require_close_breakout": True,
+            "require_ema50_slope": True,
+            "enable_breakout_entry": False,
+            "enable_sr_fractal_entry": True,
+            "fractal_tf_bars": 3,
+            "sr_touch_atr": "1.2",
+            "min_pullback_atr": "2.5",
+            "sr_stop_n_atr": "2.5",
+            "sr_min_stop_atr": "3.5",
+            "sr_max_stop_atr": "6.0",
+            "one_pb_per_impulse": True,
+            "fractal_arm_bars": 36,
+            "init_stop_atr": "5.0",
+            "trail_activate_atr": "3.5",
+            "long_trail_atr": "8.0",
+            "short_trail_atr": "5.4",
+            "short_trail_activate_atr": "4.0",
+            "short_close_anchor": True,
+            "short_close_confirm_trail": True,
+            "short_tp1_enable": False,
+            "short_tp1_atr": "4.5",
+            "short_tp1_fraction": "0.30",
+            "lock_entry_atr": True,
+            "enable_reversal_exit": True,
+            "enable_stagnation_exit": False,
+            "use_atr_risk_sizing": True,
+            "risk_pct": "0.045",
+        },
+        "symbols": ["ETH/USDT:USDT", "SOL/USDT:USDT", "BTC/USDT:USDT"],
+    },
 ]
 
 
@@ -668,13 +925,14 @@ def main() -> None:
             summary_out[sid] = {}
             for sym, rid in sym_map.items():
                 rep = c.get(f"/api/v1/runs/backtest/{rid}/report").json()
+                sm = rep.get("summary_metrics") or {}
                 summary_out[sid][sym] = {
                     "run_id": rid,
-                    "final_equity": rep.get("final_equity"),
-                    "net_pnl": rep.get("net_pnl"),
-                    "total_fees": rep.get("total_fees"),
-                    "total_funding": rep.get("total_funding"),
-                    "summary_metrics": rep.get("summary_metrics"),
+                    "final_equity": rep.get("final_equity") or sm.get("final_equity"),
+                    "net_pnl": rep.get("net_pnl") or sm.get("net_pnl"),
+                    "total_fees": rep.get("total_fees") or sm.get("total_fees"),
+                    "total_funding": rep.get("total_funding") or sm.get("total_funding"),
+                    "summary_metrics": sm,
                     "trade_metrics": rep.get("trade_metrics"),
                 }
         print(json.dumps(summary_out, ensure_ascii=False, indent=2))
