@@ -54,16 +54,39 @@ def ensure_safe_directory(repo_dir: Path) -> None:
 
 def ensure_remote_url(repo_dir: Path, remote: str, repo_url: str) -> None:
     res = _run_git(repo_dir, ["remote", "get-url", remote], check=False)
-    if res.returncode != 0:
+    if res.returncode != 0 and repo_url:
         _run_git(repo_dir, ["remote", "add", remote, repo_url], check=True)
-    elif repo_url and res.stdout.strip() != repo_url and not res.stdout.strip().startswith(("git@", "ssh://", "/")):
-        # Keep SSH or local file remotes untouched; normalize anonymous HTTPS remote if needed
-        _run_git(repo_dir, ["remote", "set-url", remote, repo_url], check=True)
+    # Ensure multi-branch fetch refspec even if repo was cloned with --single-branch
+    _run_git(
+        repo_dir,
+        ["config", f"remote.{remote}.fetch", f"+refs/heads/*:refs/remotes/{remote}/*"],
+        check=False,
+    )
 
 
-def resolve_target_ref(repo_dir: Path, remote: str, branch_spec: str) -> tuple[str, str]:
+def resolve_target_ref(
+    repo_dir: Path,
+    remote: str,
+    branch_spec: str,
+    repo_url: str = "",
+) -> tuple[str, str]:
     """Fetch remote refs and resolve (remote_ref, commit_sha) to track."""
-    _run_git(repo_dir, ["fetch", "--prune", remote], check=True)
+    fetch_res = _run_git(
+        repo_dir,
+        ["fetch", "--prune", remote, f"+refs/heads/*:refs/remotes/{remote}/*"],
+        check=False,
+    )
+    if fetch_res.returncode != 0 and repo_url:
+        # Fallback to anonymous HTTPS URL (e.g. when host cloned via SSH without container keys)
+        _run_git(
+            repo_dir,
+            ["fetch", "--prune", repo_url, f"+refs/heads/*:refs/remotes/{remote}/*"],
+            check=True,
+        )
+    elif fetch_res.returncode != 0:
+        raise subprocess.CalledProcessError(
+            fetch_res.returncode, fetch_res.args, output=fetch_res.stdout, stderr=fetch_res.stderr
+        )
 
     if branch_spec and branch_spec.lower() != "auto":
         ref_full = f"refs/remotes/{remote}/{branch_spec}"
@@ -134,7 +157,7 @@ def sync_once(
 
     head_res = _run_git(repo_dir, ["rev-parse", "HEAD"], check=False)
     old_sha = head_res.stdout.strip() if head_res.returncode == 0 else ""
-    target_ref, target_sha = resolve_target_ref(repo_dir, remote, branch_spec)
+    target_ref, target_sha = resolve_target_ref(repo_dir, remote, branch_spec, repo_url=repo_url)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if old_sha == target_sha:

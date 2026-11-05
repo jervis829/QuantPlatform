@@ -38,7 +38,9 @@ fi
 
 echo "==> [1/3] 正在从 GitHub 同步最新远端分支信息..."
 if command -v git >/dev/null 2>&1 && [ -d ".git" ]; then
-  git fetch --prune origin || true
+  git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" || true
+  git fetch --prune origin "+refs/heads/*:refs/remotes/origin/*" || \
+    git fetch --prune https://github.com/jervis829/QuantPlatform.git "+refs/heads/*:refs/remotes/origin/*" || true
   if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
     TARGET_BRANCH="${GITHUB_SYNC_BRANCH:-auto}"
     if [ "${TARGET_BRANCH}" = "auto" ]; then
