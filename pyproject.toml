@@ -41,6 +41,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["quant_platform*"]
 
+[tool.setuptools.package-data]
+"quant_platform.data.historical" = ["*.csv.gz"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

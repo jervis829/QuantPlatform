@@ -344,3 +344,94 @@ def test_docker_compose_manifest_and_one_click_e2e_demo_script() -> None:
     )
     assert proc.returncode == 0, f"E2E demo failed:\n{proc.stdout}\n{proc.stderr}"
     assert "E2E_DEMO_SUCCESS" in proc.stdout
+
+
+def test_docker_sync_overlay_and_github_realtime_sync_engine(tmp_path: Path) -> None:
+    """
+    Validate `docker-compose.sync.yml` overlay manifest, `Dockerfile.ui` build arg wiring,
+    and `scripts/github_realtime_sync.py` auto-branch tracking + dirty working tree protection.
+    """
+    from scripts.github_realtime_sync import sync_once
+
+    base_doc = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    sync_doc = yaml.safe_load(Path("docker-compose.sync.yml").read_text(encoding="utf-8"))
+    assert "seed" in base_doc["services"]
+    assert "BACKEND_INTERNAL_URL" in (base_doc["services"]["ui"]["build"].get("args") or {})
+    assert "git-sync" in sync_doc["services"]
+    assert "--reload" in sync_doc["services"]["api"]["command"]
+
+    dockerfile_ui = Path("Dockerfile.ui").read_text(encoding="utf-8")
+    assert "ARG BACKEND_INTERNAL_URL=" in dockerfile_ui
+    assert dockerfile_ui.index("ENV BACKEND_INTERNAL_URL=") < dockerfile_ui.index("RUN npm run build")
+
+    # Create a bare upstream repo + local clone to test real-time auto-branch sync & dirty guard
+    upstream = tmp_path / "upstream.git"
+    work_push = tmp_path / "pusher"
+    local_clone = tmp_path / "local_clone"
+
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(upstream)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(upstream), str(work_push)], check=True, capture_output=True)
+
+    git_env = {
+        **dict(subprocess.os.environ),
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    subprocess.run(["git", "checkout", "-b", "main"], cwd=str(work_push), env=git_env, check=True, capture_output=True)
+    (work_push / "README.md").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(work_push), env=git_env, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init main"], cwd=str(work_push), env=git_env, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=str(work_push), env=git_env, check=True, capture_output=True)
+
+    subprocess.run(["git", "clone", str(upstream), str(local_clone)], check=True, capture_output=True)
+
+    # No-op when already up to date
+    r0 = sync_once(local_clone, repo_url="", branch_spec="auto", run_seed_on_change=False)
+    assert r0["updated"] is False
+
+    # Push a newer commit onto an `arena/feature` branch -> auto mode must track it!
+    import time as _time
+
+    _time.sleep(1.1)
+    subprocess.run(
+        ["git", "checkout", "-b", "arena/test-sync"],
+        cwd=str(work_push),
+        env=git_env,
+        check=True,
+        capture_output=True,
+    )
+    (work_push / "README.md").write_text("v2 from arena\n", encoding="utf-8")
+    (work_push / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(work_push), env=git_env, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "arena update"],
+        cwd=str(work_push),
+        env=git_env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "-u", "origin", "arena/test-sync"],
+        cwd=str(work_push),
+        env=git_env,
+        check=True,
+        capture_output=True,
+    )
+
+    # Dirty local file must NOT be overwritten unless force_clean=True
+    (local_clone / "README.md").write_text("dirty user edit\n", encoding="utf-8")
+    r_dirty = sync_once(local_clone, repo_url="", branch_spec="auto", force_clean=False, run_seed_on_change=False)
+    assert r_dirty["updated"] is False
+    assert r_dirty["skipped_dirty"] is True
+    assert (local_clone / "README.md").read_text(encoding="utf-8") == "dirty user edit\n"
+
+    # Clean tree (or force_clean=True) fast-forwards to origin/arena/test-sync and flags rebuild
+    r_sync = sync_once(local_clone, repo_url="", branch_spec="auto", force_clean=True, run_seed_on_change=False)
+    assert r_sync["updated"] is True
+    assert r_sync["target_ref"] == "origin/arena/test-sync"
+    assert r_sync["needs_image_rebuild"] is True
+    assert (local_clone / "README.md").read_text(encoding="utf-8") == "v2 from arena\n"
+    assert (local_clone / ".git" / "quant_sync_status.json").is_file()
+

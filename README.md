@@ -86,8 +86,7 @@ QuantPlatform/
 ```bash
 git clone https://github.com/jervis829/QuantPlatform.git
 cd QuantPlatform
-# 如果 PR 尚未合并到 main，请切换到功能分支：
-git checkout arena/326d1ecd-quantplatform
+git fetch origin && git checkout arena/be59aaf2-quantplatform
 ```
 
 #### 第 2 步：安装 Python 后端环境并启动 API 服务（终端 1）
@@ -139,24 +138,35 @@ npm run dev
 
 ---
 
-### 方式二：Docker Compose 全栈一键自托管部署
+### 方式二：Docker Compose 全栈一键自托管部署（支持 GitHub 最新代码 7×24 实时同步）
 
-如果你已安装 Docker，可直接启动完整的六服务生产拓扑（PostgreSQL 16 + Redis 7 + FastAPI + Supervisor Worker + Next.js UI + Prometheus）：
+如果你已安装 Docker Desktop / Docker Engine，可一键启动完整生产拓扑（PostgreSQL 16 + Redis 7 + FastAPI + Supervisor Worker + Delphi II 真实历史回测自动种子 `seed` + Next.js UI + Prometheus + **`git-sync` GitHub 实时同步容器**）：
+
+#### A. 推荐：一键部署 + 自动实时同步 GitHub 最新代码（前后端秒级热重载）
 
 ```bash
-cd QuantPlatform
+# macOS / Linux / WSL2 / Git Bash
+./scripts/deploy_local_docker.sh
 
-# 1. 准备环境变量文件（生产环境请务必修改其中的数据库密码与 API Key！）
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy_local_docker.ps1
+```
+
+或直接使用原生 Compose 叠加启动：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sync.yml up -d --build
+```
+
+启动后，`git-sync` 容器会每 15 秒轮询 GitHub 最新提交（自动追踪 `main` 与最新 `arena/*` 分支），拉取后 FastAPI (`--reload`) 与 Next.js UI 自动秒级热更新，并在 `scripts/seed_delphi_strategies.py` 更新时自动增量入库新策略与回测结果。详见完整文档 [`docs/LOCAL_DOCKER_DEPLOY.md`](docs/LOCAL_DOCKER_DEPLOY.md)。
+
+#### B. 纯静态生产编译镜像模式（不开启自动拉取）
+
+```bash
 cp .env.example .env
-
-# 2. 构建镜像并后台启动全部服务
 docker compose up -d --build
-
-# 3. 查看各容器运行与健康状态
 docker compose ps
-
-# 4. （可选）查看后端与守护进程实时结构化 JSON 日志
-docker compose logs -f api worker
+docker compose logs -f api seed
 ```
 
 全栈启动后的访问地址：

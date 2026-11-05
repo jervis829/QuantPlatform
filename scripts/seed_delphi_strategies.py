@@ -9,6 +9,8 @@ Binance USDT-M Perpetual backtests (2023-10-15 .. 2026-07-01 UTC, 23,760 1H bars
 from __future__ import annotations
 
 import json
+import os
+import time
 import httpx
 
 
@@ -870,10 +872,22 @@ STRATEGY_SPECS = [
 
 
 def main() -> None:
-    headers = {"X-API-Key": "admin-dev-token"}
-    base = "http://127.0.0.1:8000"
+    admin_key = os.environ.get("QP_ADMIN_API_KEY", "admin-dev-token")
+    headers = {"X-API-Key": admin_key}
+    base = os.environ.get("QUANT_API_BASE_URL", "http://127.0.0.1:8000")
 
     with httpx.Client(base_url=base, headers=headers, timeout=300.0) as c:
+        for attempt in range(30):
+            try:
+                hr = c.get("/api/v1/health")
+                if hr.status_code == 200:
+                    break
+            except Exception:
+                pass
+            if attempt == 29:
+                raise RuntimeError(f"QuantPlatform API at {base} did not become healthy within 60s")
+            time.sleep(2.0)
+
         existing = {s["strategy_id"] for s in c.get("/api/v1/strategies").json()}
         existing_runs: dict[tuple[str, str], str] = {}
         for r_item in c.get("/api/v1/runs?env=backtest").json():

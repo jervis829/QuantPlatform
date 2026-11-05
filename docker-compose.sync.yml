@@ -1,0 +1,71 @@
+# Real-Time GitHub -> Local Docker Hot-Sync Overlay
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sync.yml up -d --build
+#
+# Effects:
+#   1. `git-sync` polls https://github.com/jervis829/QuantPlatform.git every 15s
+#      (auto-tracking the newest commit across `main` and `arena/*` branches, or `GITHUB_SYNC_BRANCH`).
+#   2. `api` & `worker` mount `./quant_platform` and `./scripts` with Uvicorn `--reload`,
+#      applying Python backend/engine updates in < 1 second without container rebuilds.
+#   3. `ui` mounts `./frontend/src` & config files (preserving Linux `/ui/node_modules`)
+#      and runs Next.js hot-reload (`npm run dev`), applying UI updates in < 2 seconds.
+#   4. Any update to `scripts/seed_*.py` automatically registers new strategies & runs in Postgres.
+
+services:
+  api:
+    command:
+      [
+        "uvicorn",
+        "quant_platform.api.app:create_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/quant_platform",
+      ]
+    volumes:
+      - ./quant_platform:/app/quant_platform
+      - ./scripts:/app/scripts
+
+  worker:
+    volumes:
+      - ./quant_platform:/app/quant_platform
+
+  ui:
+    command: ["npm", "run", "dev"]
+    environment:
+      BACKEND_INTERNAL_URL: ${DOCKER_BACKEND_URL:-http://api:8000}
+      WATCHPACK_POLLING: "true"
+      TZ: UTC
+    volumes:
+      - ./frontend/src:/ui/src
+      - ./frontend/next.config.mjs:/ui/next.config.mjs
+      - ./frontend/tailwind.config.ts:/ui/tailwind.config.ts
+      - ./frontend/postcss.config.mjs:/ui/postcss.config.mjs
+      - ./frontend/tsconfig.json:/ui/tsconfig.json
+
+  git-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    working_dir: /workspace
+    command: ["python", "/workspace/scripts/github_realtime_sync.py"]
+    environment:
+      GITHUB_SYNC_REPO_DIR: /workspace
+      GITHUB_REPO_URL: ${GITHUB_REPO_URL:-https://github.com/jervis829/QuantPlatform.git}
+      GITHUB_SYNC_REMOTE: ${GITHUB_SYNC_REMOTE:-origin}
+      GITHUB_SYNC_BRANCH: ${GITHUB_SYNC_BRANCH:-auto}
+      GITHUB_SYNC_INTERVAL_SEC: ${GITHUB_SYNC_INTERVAL_SEC:-15}
+      GITHUB_SYNC_FORCE_CLEAN: ${GITHUB_SYNC_FORCE_CLEAN:-false}
+      QUANT_API_BASE_URL: http://api:8000
+      QP_ADMIN_API_KEY: ${QP_ADMIN_API_KEY:-admin-dev-token}
+      TZ: UTC
+    volumes:
+      - .:/workspace
+    depends_on:
+      api:
+        condition: service_healthy
