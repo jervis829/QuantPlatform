@@ -1,15 +1,6 @@
 # Real-Time GitHub -> Local Docker Hot-Sync Overlay
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.sync.yml up -d --build
-#
-# Effects:
-#   1. `git-sync` polls https://github.com/jervis829/QuantPlatform.git every 15s
-#      (auto-tracking the newest commit across `main` and `arena/*` branches, or `GITHUB_SYNC_BRANCH`).
-#   2. `api` & `worker` mount `./quant_platform` and `./scripts` with Uvicorn `--reload`,
-#      applying Python backend/engine updates in < 1 second without container rebuilds.
-#   3. `ui` mounts `./frontend/src` & config files (preserving Linux `/ui/node_modules`)
-#      and runs Next.js hot-reload (`npm run dev`), applying UI updates in < 2 seconds.
-#   4. Any update to `scripts/seed_*.py` automatically registers new strategies & runs in Postgres.
 
 services:
   api:
@@ -48,9 +39,12 @@ services:
       - ./frontend/tsconfig.json:/ui/tsconfig.json
 
   git-sync:
+    image: quantplatform-api:local
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim}
     restart: unless-stopped
     working_dir: /workspace
     command: ["python", "/workspace/scripts/github_realtime_sync.py"]

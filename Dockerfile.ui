@@ -1,9 +1,12 @@
-FROM node:22-alpine
+ARG NODE_BASE_IMAGE=public.ecr.aws/docker/library/node:22-alpine
+FROM ${NODE_BASE_IMAGE}
 
 WORKDIR /ui
 
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=10000 --registry=${NPM_REGISTRY} || \
+    npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=10000 --registry=https://registry.npmmirror.com
 
 ARG BACKEND_INTERNAL_URL=http://api:8000
 ENV BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL}

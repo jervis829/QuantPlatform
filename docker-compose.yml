@@ -27,9 +27,12 @@ services:
       retries: 5
 
   api:
+    image: quantplatform-api:local
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim}
     restart: unless-stopped
     environment:
       QUANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quant}:${POSTGRES_PASSWORD:-quant_secret_change_me}@postgres:5432/${POSTGRES_DB:-quant_platform}
@@ -53,9 +56,12 @@ services:
       retries: 5
 
   worker:
+    image: quantplatform-api:local
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim}
     restart: unless-stopped
     command: ["python", "-m", "quant_platform.observability.worker_main"]
     environment:
@@ -67,9 +73,12 @@ services:
         condition: service_healthy
 
   seed:
+    image: quantplatform-api:local
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim}
     restart: "no"
     command: ["python", "scripts/seed_delphi_strategies.py"]
     environment:
@@ -81,10 +90,12 @@ services:
         condition: service_healthy
 
   ui:
+    image: quantplatform-ui:local
     build:
       context: ./frontend
       dockerfile: ../Dockerfile.ui
       args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-public.ecr.aws/docker/library/node:22-alpine}
         BACKEND_INTERNAL_URL: ${DOCKER_BACKEND_URL:-http://api:8000}
     restart: unless-stopped
     environment:
