@@ -47,6 +47,87 @@ export interface ChartTradeMarker {
   liquidity: string;
 }
 
+export interface CommitteeDirectorThesis {
+  archetype: string;
+  symbol: string;
+  exchange: string;
+  market_regime: string;
+  thesis_title: string;
+  thesis_summary: string;
+  entry_logic_zh: string;
+  exit_logic_zh: string;
+  risk_plan_zh: string;
+  fast_window: number;
+  slow_window: number;
+  rsi_window?: number;
+  rsi_oversold?: string;
+  rsi_overbought?: string;
+  base_order_qty: string;
+}
+
+export interface CommitteeEvolutionRequest {
+  strategy_id: string;
+  name: string;
+  prompt: string;
+  description?: string;
+  symbol?: string;
+  exchange?: string;
+  max_rounds?: number;
+  target_max_drawdown_pct?: string;
+  initial_usdt?: string;
+  leverage?: string;
+  lookback_bars?: number;
+}
+
+export interface CommitteeEvolutionResponse {
+  strategy_id: string;
+  champion_version: StrategyVersionResponse;
+  champion_round: number;
+  champion_run_id: string;
+  llm_mode: string;
+  market_profile: CommitteeMarketProfile;
+  director_thesis: CommitteeDirectorThesis;
+  rounds: Array<CommitteeRoundSummary>;
+}
+
+export interface CommitteeMarketProfile {
+  exchange: string;
+  symbol: string;
+  interval: string;
+  bar_count: number;
+  start_price: string;
+  end_price: string;
+  buy_and_hold_return_pct: number;
+  annualized_volatility_pct: number;
+  efficiency_ratio: number;
+  regime_label: string;
+  regime_summary_zh: string;
+}
+
+export interface CommitteeRoundSummary {
+  round_index: number;
+  version_id: string;
+  version: number;
+  run_id: string;
+  mutation_tags?: Array<string>;
+  coder_summary: string;
+  cumulative_return: number;
+  annualized_return: number;
+  max_drawdown: number;
+  sharpe: number;
+  sortino: number;
+  win_rate: number;
+  payoff_ratio: number;
+  closed_trade_count: number;
+  turnover_rate: number;
+  total_fees_usdt: string;
+  total_funding_usdt: string;
+  composite_score: number;
+  critic_verdict: string;
+  critic_findings?: Array<string>;
+  recommended_mutations?: Array<string>;
+}
+
 export interface ExchangeConnectionItem {
   exchange: string;
   channel: string;
@@ -600,6 +681,7 @@ export type ApiEndpointPath =
   | "/api/v1/search"
   | "/api/v1/specs"
   | "/api/v1/strategies"
+  | "/api/v1/strategies/evolve-committee"
   | "/api/v1/strategies/generate-nl"
   | "/api/v1/strategies/upload"
   | "/api/v1/strategies/versions/{version_id}/approve"

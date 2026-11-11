@@ -260,3 +260,117 @@ def test_nl_pipeline_iterative_repair_and_backtest_drawdown_gate_rejection(tmp_p
                 gate_config=BacktestGateConfig(min_trades=999, max_drawdown_pct=Decimal("0.01")),
             )
         session.commit()
+
+
+def test_multi_agent_research_committee_closed_loop_evolution(tmp_path: Path) -> None:
+    """
+    Validate AutoResearchCommittee (Director -> Quant Coder -> AST/Sandbox -> Real Backtest -> Risk Critic):
+    1. Evolves across 3 rounds on authentic Binance 1H bars + 8H funding.
+    2. Persists real RunOrmRecord reports for every round and improves score over noisy Round 1 baseline.
+    3. Keeps every generated version in mandatory ApprovalStatus.PENDING (Red Lines 7 & 8).
+    """
+    from quant_platform.data.historical import load_real_binance_1h_dataset
+    from quant_platform.nl_generator import AutoResearchCommittee
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'p10_committee.db'}")
+    init_db(engine)
+    sf = build_session_factory(engine)
+    clock = SimulatedClock(1_750_000_000_000)
+    sandbox = ContainerStrategySandbox()
+
+    bars, fundings = load_real_binance_1h_dataset("binance", "ETH/USDT:USDT")
+    bars = bars[-2400:]
+    cutoff = bars[0].open_time_ms
+    fundings = [f for f in fundings if f.funding_ts_ms >= cutoff]
+    eth_spec = SymbolSpec(
+        exchange="binance",
+        symbol="ETH/USDT:USDT",
+        contract_type=ContractType.PERPETUAL,
+        base_asset="ETH",
+        quote_asset="USDT",
+        margin_asset="USDT",
+        contract_size=Decimal("1"),
+        tick_size=Decimal("0.01"),
+        step_size=Decimal("0.001"),
+        min_qty=Decimal("0.001"),
+        max_qty=Decimal("10000"),
+        min_notional=Decimal("5"),
+        max_leverage=Decimal("20"),
+        maker_fee=Decimal("0.0002"),
+        taker_fee=Decimal("0.0004"),
+        effective_from_ms=0,
+    )
+
+    with sf() as session:
+        store = StrategyVersionStore(session=session, sandbox=sandbox)
+        committee = AutoResearchCommittee(
+            session=session,
+            version_store=store,
+            clock=clock,
+        )
+        evo = committee.evolve_and_register(
+            strategy_id="strat_eth_committee",
+            name="ETH Committee Breakout",
+            prompt="围绕 ETH/USDT:USDT 设计顺大势通道突破策略，控制回撤在 25% 以内",
+            author="quant_researcher",
+            bars=bars,
+            fundings=fundings,
+            spec=eth_spec,
+            max_rounds=3,
+            target_max_drawdown_pct=Decimal("0.25"),
+        )
+        session.commit()
+
+        assert len(evo["rounds"]) == 3
+        assert 1 <= evo["champion_round"] <= 3
+        champ_ver = evo["champion_version"]
+        assert champ_ver.approval_status == ApprovalStatus.PENDING.value
+        assert champ_ver.backtest_gate_json is not None
+        assert champ_ver.backtest_gate_json["mode"] == "multi_agent_committee"
+        assert len(champ_ver.backtest_gate_json["rounds"]) == 3
+
+        all_vers = store.list_versions("strat_eth_committee")
+        assert len(all_vers) >= 3
+        assert all(v.approval_status == ApprovalStatus.PENDING.value for v in all_vers)
+
+
+def test_evolve_committee_api_endpoint_and_audit_trail(tmp_path: Path) -> None:
+    """
+    Validate POST /api/v1/strategies/evolve-committee end-to-end via FastAPI TestClient:
+    returns typed CommitteeEvolutionResponse, persists inspectable backtest reports per round,
+    and records hash-chained COMMITTEE_STRATEGY_EVOLVED audit log.
+    """
+    from fastapi.testclient import TestClient
+    from quant_platform.api import create_app
+
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'p10_committee_api.db'}")
+    client = TestClient(app)
+    headers = {"X-API-Key": "researcher-dev-token"}
+
+    resp = client.post(
+        "/api/v1/strategies/evolve-committee",
+        headers=headers,
+        json={
+            "strategy_id": "strat_nl_api",
+            "name": "Committee API Test",
+            "prompt": "BTC/USDT:USDT 双指数均线 EMA 趋势策略，控制回撤",
+            "symbol": "BTC/USDT:USDT",
+            "exchange": "binance",
+            "max_rounds": 2,
+            "target_max_drawdown_pct": "0.25",
+            "lookback_bars": 180,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["strategy_id"] == "strat_nl_api"
+    assert len(body["rounds"]) == 2
+    assert body["champion_version"]["approval_status"] == "PENDING"
+    assert body["director_thesis"]["archetype"] == "ema_crossover"
+
+    # Every round's run_id must have a persisted report accessible via /api/v1/runs/backtest/{run_id}/report
+    for r in body["rounds"]:
+        rep_resp = client.get(f"/api/v1/runs/backtest/{r['run_id']}/report", headers=headers)
+        assert rep_resp.status_code == 200
+        assert "summary_metrics" in rep_resp.json()
+

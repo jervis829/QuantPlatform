@@ -1,4 +1,6 @@
 import type {
+  CommitteeEvolutionRequest,
+  CommitteeEvolutionResponse,
   GlobalSearchResponse,
   HealthResponse,
   KillSwitchPreviewResponse,
@@ -155,6 +157,16 @@ export const quantApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  evolveStrategyCommittee: (apiKey: string, body: CommitteeEvolutionRequest) =>
+    requestJson<CommitteeEvolutionResponse>(
+      "/api/v1/strategies/evolve-committee",
+      apiKey,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
 
   updateStrategyParams: (
     apiKey: string,

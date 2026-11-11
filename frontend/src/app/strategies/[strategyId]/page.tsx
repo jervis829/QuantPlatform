@@ -28,6 +28,7 @@ import {
   RunLoadingState,
 } from "../../../components/quant/state-views";
 import { StrategyCodeAndVersionPanel } from "../../../components/strategy/code-diff-viewer";
+import { CommitteeEvolutionPanel } from "../../../components/strategy/committee-evolution-panel";
 import {
   LiveThreeStepWizardModal,
   QuickBacktestModal,
@@ -499,6 +500,19 @@ function StrategyDetailInner() {
           </IsolatedDangerZone>
         </div>
       </section>
+
+      {/* Multi-Agent Research Committee Closed-Loop Evolution Report (if generated via Committee) */}
+      <CommitteeEvolutionPanel
+        backtestGate={
+          selectedVersion.backtest_gate?.mode === "multi_agent_committee"
+            ? selectedVersion.backtest_gate
+            : detail.latest_version.backtest_gate
+        }
+        onSelectRoundVersion={(vid) => {
+          setSelectedVersionId(vid);
+          switchSection("code");
+        }}
+      />
 
       {/* ===================================================================== */}
       {/* DEEP WORKSPACE ZONES: CONFIG · CODE · RUNS · LOGS                     */}

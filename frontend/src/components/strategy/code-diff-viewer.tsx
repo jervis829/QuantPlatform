@@ -180,11 +180,13 @@ export function StrategyCodeAndVersionPanel({
           {selectedVersion.backtest_gate && (
             <div className="mt-2.5 flex flex-wrap items-center gap-3 border-t border-slate-800/80 pt-2 font-mono text-[11px] text-slate-300">
               <span className="text-sky-300 font-semibold">自动沙箱与回测门禁结果:</span>
-              {Object.entries(selectedVersion.backtest_gate).map(([k, v]) => (
-                <span key={k}>
-                  {k}: <strong className="text-white">{String(v)}</strong>
-                </span>
-              ))}
+              {Object.entries(selectedVersion.backtest_gate)
+                .filter(([, v]) => v === null || typeof v !== "object")
+                .map(([k, v]) => (
+                  <span key={k}>
+                    {k}: <strong className="text-white">{String(v)}</strong>
+                  </span>
+                ))}
             </div>
           )}
         </div>

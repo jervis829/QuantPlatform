@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Code2, Sparkles } from "lucide-react";
+import { Bot, Code2, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { QuantApiError, quantApi } from "../../lib/apiClient";
 import { usePreferences } from "../../lib/preferences-context";
@@ -55,6 +55,9 @@ class SmaCrossParams(BaseModel):
     )
 
 
+SmaCrossParams.model_rebuild(_types_namespace={"Decimal": Decimal})
+
+
 class SmaCrossStrategy(Strategy):
     ParamModel = SmaCrossParams
 
@@ -102,30 +105,40 @@ class SmaCrossStrategy(Strategy):
         return out
 `;
 
+export type CreateStrategyMode = "committee" | "nl" | "python";
+
 export interface CreateStrategyModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  defaultMode?: "python" | "nl";
+  defaultMode?: CreateStrategyMode;
 }
 
 export function CreateStrategyModal({
   open,
   onOpenChange,
-  defaultMode = "nl",
+  defaultMode = "committee",
 }: CreateStrategyModalProps) {
   const router = useRouter();
   const { apiKey } = usePreferences();
   const queryClient = useQueryClient();
 
-  const [mode, setMode] = useState<"python" | "nl">(defaultMode);
-  const [name, setName] = useState("BTC 双均线趋势策略");
-  const [description, setDescription] = useState("均线金叉买入，死叉平仓");
+  const [mode, setMode] = useState<CreateStrategyMode>(defaultMode);
+  const [name, setName] = useState("ETH 投研委员会突破演化策略");
+  const [description, setDescription] = useState(
+    "多智能体协同立意、真实币安 1H 回测检验与风控迭代优化"
+  );
   const [customId, setCustomId] = useState("");
   const [showAdvancedId, setShowAdvancedId] = useState(false);
   const [code, setCode] = useState(DEFAULT_PYTHON_TEMPLATE);
   const [prompt, setPrompt] = useState(
-    "当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
+    "围绕 ETH/USDT:USDT 设计一套顺大势通道突破策略，控制回撤在 25% 以内，避免震荡市频繁止损磨损"
   );
+
+  // Committee evolution options
+  const [symbol, setSymbol] = useState("ETH/USDT:USDT");
+  const [maxRounds, setMaxRounds] = useState<number>(3);
+  const [lookbackBars, setLookbackBars] = useState<number>(8760);
+  const [targetMaxDd, setTargetMaxDd] = useState<string>("0.25");
 
   React.useEffect(() => {
     if (open) {
@@ -145,24 +158,43 @@ export function CreateStrategyModal({
   const createMutation = useMutation({
     mutationFn: async () => {
       if (mode === "python") {
-        return quantApi.uploadStrategy(apiKey, {
+        const ver = await quantApi.uploadStrategy(apiKey, {
           strategy_id: resolvedStrategyId,
           name: name.trim(),
           description: description.trim(),
           code,
         });
+        return ver.strategy_id;
       }
-      return quantApi.generateNLStrategy(apiKey, {
+      if (mode === "committee") {
+        const evo = await quantApi.evolveStrategyCommittee(apiKey, {
+          strategy_id: resolvedStrategyId,
+          name: name.trim(),
+          description: description.trim(),
+          prompt,
+          symbol,
+          exchange: "binance",
+          max_rounds: maxRounds,
+          target_max_drawdown_pct: targetMaxDd,
+          initial_usdt: "10000",
+          leverage: "2",
+          lookback_bars: lookbackBars,
+        });
+        return evo.strategy_id;
+      }
+      const ver = await quantApi.generateNLStrategy(apiKey, {
         strategy_id: resolvedStrategyId,
         name: name.trim(),
         description: description.trim(),
         prompt,
       });
+      return ver.strategy_id;
     },
-    onSuccess: (ver) => {
+    onSuccess: (targetStrategyId) => {
       void queryClient.invalidateQueries({ queryKey: ["strategies"] });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
       onOpenChange(false);
-      router.push(`/strategies/${encodeURIComponent(ver.strategy_id)}`);
+      router.push(`/strategies/${encodeURIComponent(targetStrategyId)}`);
     },
   });
 
@@ -175,56 +207,74 @@ export function CreateStrategyModal({
         <DialogHeader>
           <DialogTitle>新建交易策略</DialogTitle>
           <DialogDescription>
-            支持直接用中文描述买卖规则自动生成策略，也支持直接粘贴 Python 策略代码。
+            支持多智能体闭环自动演化（总监立意 → 编写代码 → 真实币安 1H 回测 → 风控挑刺迭代）、一句话极速生成，或直接粘贴 Python 策略代码。
           </DialogDescription>
         </DialogHeader>
 
-        {/* Mode Switcher — Plain Language, NL first */}
-        <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-slate-950 p-1">
+        {/* 3-Mode Switcher */}
+        <div className="grid grid-cols-3 gap-1.5 rounded-md border border-border bg-slate-950 p-1">
+          <button
+            type="button"
+            onClick={() => setMode("committee")}
+            className={`flex items-center justify-center gap-1.5 rounded py-2 text-xs font-medium ${
+              mode === "committee"
+                ? "bg-emerald-600 text-white"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Bot className="h-3.5 w-3.5" />
+            <span>多智能体自动演化（推荐）</span>
+          </button>
           <button
             type="button"
             onClick={() => setMode("nl")}
-            className={`flex items-center justify-center gap-2 rounded py-2 text-xs font-medium ${
+            className={`flex items-center justify-center gap-1.5 rounded py-2 text-xs font-medium ${
               mode === "nl"
                 ? "bg-violet-600 text-white"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Sparkles className="h-3.5 w-3.5" />
-            <span>一句话生成策略（新手推荐）</span>
+            <span>一句话极速生成</span>
           </button>
           <button
             type="button"
             onClick={() => setMode("python")}
-            className={`flex items-center justify-center gap-2 rounded py-2 text-xs font-medium ${
+            className={`flex items-center justify-center gap-1.5 rounded py-2 text-xs font-medium ${
               mode === "python"
                 ? "bg-blue-600 text-white"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Code2 className="h-3.5 w-3.5" />
-            <span>编写 Python 代码（进阶）</span>
+            <span>编写 Python 代码</span>
           </button>
         </div>
 
         {createMutation.isPending ? (
           <RunLoadingState
             title={
-              mode === "python"
-                ? "正在安全检查并保存您的策略代码..."
-                : "正在根据您的描述自动编写策略并执行回测验证..."
+              mode === "committee"
+                ? `投研委员会正在执行 ${maxRounds} 轮「编码 → 币安真实 1H 回测 → 风控诊断迭代」...`
+                : mode === "python"
+                  ? "正在安全检查并保存您的策略代码..."
+                  : "正在根据您的描述自动编写策略并执行回测验证..."
             }
-            currentStageLabel="自动检查代码安全性与交易规则有效性"
-            progressPct={65}
+            currentStageLabel={
+              mode === "committee"
+                ? `总监立意官分析 ${symbol} 市场体制 → 策略工程师生成 AST 安全代码 → 跑真实历史回测并由风控官逐轮优选`
+                : "自动检查代码安全性与交易规则有效性"
+            }
+            progressPct={mode === "committee" ? 72 : 65}
           />
         ) : (
           <div className="space-y-3 text-xs">
             {createMutation.isError && (
               <ActionableErrorState
-                title="策略保存未通过"
+                title="策略生成或保存未通过"
                 reasonCode={apiErr?.reasonCode ?? "STRATEGY_VALIDATION_FAILED"}
                 message={apiErr?.message ?? String(createMutation.error)}
-                remediation="请检查买卖规则描述是否清晰，或检查代码语法是否正确。"
+                remediation="请检查买卖规则描述是否清晰，或检查代码语法是否符合安全沙箱规范。"
                 rawDetail={apiErr?.rawDetail}
               />
             )}
@@ -236,7 +286,7 @@ export function CreateStrategyModal({
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="例如：BTC 双均线趋势策略"
+                  placeholder="例如：ETH 投研委员会突破演化策略"
                   className="h-8 w-full rounded border border-input bg-slate-950 px-2.5 text-white"
                 />
               </div>
@@ -252,37 +302,112 @@ export function CreateStrategyModal({
               </div>
             </div>
 
-            {mode === "nl" ? (
+            {mode === "committee" && (
+              <div className="rounded-md border border-emerald-500/30 bg-emerald-950/15 p-3 space-y-2.5">
+                <div className="text-[11px] text-emerald-200 font-medium">
+                  闭环流程：① 总监立意官诊断实证波动率 → ② 策略工程师合成纯 Decimal 源码 → ③ 币安真实 1H K线+资金费回测 → ④ 首席风控官挑刺并自动进化下一代（保留人工审批门禁）
+                </div>
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">回测标的</label>
+                    <select
+                      value={symbol}
+                      onChange={(e) => setSymbol(e.target.value)}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    >
+                      <option value="ETH/USDT:USDT">ETH/USDT 永续</option>
+                      <option value="BTC/USDT:USDT">BTC/USDT 永续</option>
+                      <option value="SOL/USDT:USDT">SOL/USDT 永续</option>
+                      <option value="BNB/USDT:USDT">BNB/USDT 永续</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">自动进化轮数</label>
+                    <select
+                      value={maxRounds}
+                      onChange={(e) => setMaxRounds(Number(e.target.value))}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    >
+                      <option value={2}>2 轮迭代</option>
+                      <option value={3}>3 轮迭代（推荐）</option>
+                      <option value={4}>4 轮深度迭代</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">真实历史样本</label>
+                    <select
+                      value={lookbackBars}
+                      onChange={(e) => setLookbackBars(Number(e.target.value))}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    >
+                      <option value={8760}>近 1 年 1H (8,760根)</option>
+                      <option value={23760}>全量 2.7 年 1H (23,760根)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">最大回撤红线</label>
+                    <select
+                      value={targetMaxDd}
+                      onChange={(e) => setTargetMaxDd(e.target.value)}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    >
+                      <option value="0.20">控制在 20% 内</option>
+                      <option value="0.25">控制在 25% 内</option>
+                      <option value="0.30">控制在 30% 内</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {mode !== "python" ? (
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-1">
                   <label className="text-slate-200 font-medium">
-                    用一句话描述您的买卖规则 *
+                    {mode === "committee"
+                      ? "输入您的投研目标或交易思路 *"
+                      : "用一句话描述您的买卖规则 *"}
                   </label>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <span className="text-slate-400">快速填入示例:</span>
+                    <span className="text-slate-400">一键填入模板:</span>
                     <button
                       type="button"
                       onClick={() => {
-                        setName("BTC 双均线趋势策略");
+                        setSymbol("ETH/USDT:USDT");
+                        setName("ETH 顺大势通道突破演化策略");
                         setPrompt(
-                          "当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
+                          "围绕 ETH/USDT:USDT 设计顺大势通道突破策略，控制回撤在 25% 以内，避免震荡频繁止损"
                         );
                       }}
-                      className="rounded border border-violet-500/40 bg-violet-950/30 px-2 py-0.5 text-violet-200 hover:bg-violet-900/40"
+                      className="rounded border border-emerald-500/40 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 hover:bg-emerald-900/40"
                     >
-                      双均线金叉买入
+                      通道突破演化
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setName("ETH RSI 超卖反弹策略");
+                        setSymbol("BTC/USDT:USDT");
+                        setName("BTC EMA 宏观趋势演化策略");
                         setPrompt(
-                          "当 ETH/USDT:USDT 7周期 RSI 低于 32 时买入 0.8 ETH，高于 68 时平仓"
+                          "当 BTC/USDT:USDT 8周期 EMA 上穿 24周期 EMA 时顺势做多，下穿时平仓并抑制高频换手磨损"
                         );
                       }}
                       className="rounded border border-violet-500/40 bg-violet-950/30 px-2 py-0.5 text-violet-200 hover:bg-violet-900/40"
                     >
-                      RSI 超卖抄底
+                      EMA 趋势抗磨损
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSymbol("SOL/USDT:USDT");
+                        setName("SOL RSI 超卖回归演化策略");
+                        setPrompt(
+                          "当 SOL/USDT:USDT RSI 跌入超卖区反弹买入，回到强势区止盈，并加入趋势过滤与移动止损"
+                        );
+                      }}
+                      className="rounded border border-sky-500/40 bg-sky-950/30 px-2 py-0.5 text-sky-200 hover:bg-sky-900/40"
+                    >
+                      RSI 超卖回归
                     </button>
                   </div>
                 </div>
@@ -290,8 +415,8 @@ export function CreateStrategyModal({
                   rows={4}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="例如：当 BTC/USDT:USDT 5周期均线上穿 14周期均线时买入 0.05 BTC，下穿时平仓"
-                  className="w-full rounded border border-input bg-[#060912] p-3 text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
+                  placeholder="例如：围绕 ETH/USDT:USDT 设计一套顺大势通道突破策略，控制回撤在 25% 以内..."
+                  className="w-full rounded border border-input bg-[#060912] p-3 text-xs text-slate-100 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
             ) : (
@@ -313,7 +438,9 @@ export function CreateStrategyModal({
                 onClick={() => setShowAdvancedId((v) => !v)}
                 className="text-[11px] text-slate-400 hover:text-slate-200"
               >
-                {showAdvancedId ? "▾ 收起高级选项" : "▸ 高级选项（自定义策略英文 ID，默认自动生成）"}
+                {showAdvancedId
+                  ? "▾ 收起高级选项"
+                  : "▸ 高级选项（自定义策略英文 ID，默认自动生成）"}
               </button>
               {showAdvancedId && (
                 <div className="mt-1.5 space-y-1">
@@ -336,10 +463,17 @@ export function CreateStrategyModal({
           </Button>
           <Button
             variant="default"
+            className={
+              mode === "committee" ? "bg-emerald-600 hover:bg-emerald-500" : undefined
+            }
             disabled={createMutation.isPending || !name.trim()}
             onClick={() => createMutation.mutate()}
           >
-            {mode === "nl" ? "立即生成策略" : "保存策略"}
+            {mode === "committee"
+              ? `启动 ${maxRounds} 轮自动演化与真实回测`
+              : mode === "nl"
+                ? "立即生成策略"
+                : "保存策略"}
           </Button>
         </DialogFooter>
       </DialogContent>

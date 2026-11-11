@@ -6,6 +6,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
   AlertCircle,
   ArrowUpRight,
+  Bot,
   CheckCircle2,
   Code2,
   LineChart,
@@ -24,7 +25,10 @@ import {
   EmptyState,
   RunLoadingState,
 } from "../../components/quant/state-views";
-import { CreateStrategyModal } from "../../components/strategy/create-strategy-drawer";
+import {
+  CreateStrategyModal,
+  type CreateStrategyMode,
+} from "../../components/strategy/create-strategy-drawer";
 import { QuickBacktestModal } from "../../components/strategy/launch-modals";
 import { BacktestActionButton, Button } from "../../components/ui/button";
 import { QuantApiError, quantApi } from "../../lib/apiClient";
@@ -60,7 +64,8 @@ function StrategiesWorkbenchInner() {
   const [patrolFilter, setPatrolFilter] = useState<PatrolFilter>("ALL");
   const [showGuide, setShowGuide] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createDefaultMode, setCreateDefaultMode] = useState<"python" | "nl">("nl");
+  const [createDefaultMode, setCreateDefaultMode] =
+    useState<CreateStrategyMode>("committee");
   const [quickBtTarget, setQuickBtTarget] = useState<{
     strategyId: string;
     name: string;
@@ -319,7 +324,19 @@ function StrategiesWorkbenchInner() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="default"
+            size="default"
+            className="bg-emerald-600 hover:bg-emerald-500"
+            onClick={() => {
+              setCreateDefaultMode("committee");
+              setCreateOpen(true);
+            }}
+          >
+            <Bot className="h-3.5 w-3.5" />
+            <span>AI 多智能体演化策略</span>
+          </Button>
           <Button
             variant="default"
             size="default"

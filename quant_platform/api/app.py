@@ -38,6 +38,11 @@ from quant_platform.api.schemas import (
     LedgerQuerySummary,
     MaintenanceModeRequest,
     NLStrategyGenerateRequest,
+    CommitteeDirectorThesis,
+    CommitteeEvolutionRequest,
+    CommitteeEvolutionResponse,
+    CommitteeMarketProfile,
+    CommitteeRoundSummary,
     OrderFillsDrilldownResponse,
     PreflightAccountCheck,
     PreflightBlockingReason,
@@ -120,10 +125,13 @@ from quant_platform.live import (
     LiveRiskEngine,
     MockRawExchangeTransport,
 )
+from quant_platform.config import get_settings
 from quant_platform.nl_generator import (
+    AutoResearchCommittee,
     BacktestGateConfig,
     DeterministicRuleLLMProvider,
     NLStrategyGenerationPipeline,
+    OpenAICompatibleLLMProvider,
 )
 from quant_platform.observability.metrics import PlatformMetrics
 from quant_platform.reconciliation import ThreeTierReconciler
@@ -911,6 +919,113 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                 session.rollback()
                 raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
         await ws_hub.publish({"type": "nl_strategy_generated", "version_id": resp.version_id})
+        return resp
+
+    @app.post("/api/v1/strategies/evolve-committee", response_model=CommitteeEvolutionResponse)
+    async def evolve_strategy_committee(
+        req: CommitteeEvolutionRequest,
+        principal: ActorPrincipal = Depends(require_min_role(Role.RESEARCHER)),
+    ) -> CommitteeEvolutionResponse:
+        if app.state.maintenance_mode:
+            raise HTTPException(status_code=503, detail="Platform is in maintenance mode")
+
+        settings = get_settings()
+        target_dd = to_strict_decimal(req.target_max_drawdown_pct, "target_max_drawdown_pct")
+        init_usdt = to_strict_decimal(req.initial_usdt, "initial_usdt")
+        lev = to_strict_decimal(req.leverage, "leverage")
+        spec = _default_perp_spec(req.symbol, req.exchange)
+
+        def _run_committee_sync() -> CommitteeEvolutionResponse:
+            raw_bars, raw_fundings = _resolve_dataset_for_strategy(
+                req.exchange, req.symbol, req.strategy_id
+            )
+            bars = raw_bars[-req.lookback_bars :] if len(raw_bars) > req.lookback_bars else raw_bars
+            cutoff_ms = bars[0].open_time_ms if bars else 0
+            fundings = [f for f in raw_fundings if f.funding_ts_ms >= cutoff_ms]
+
+            with sf() as session:
+                store = StrategyVersionStore(session=session, sandbox=sandbox)
+                committee = AutoResearchCommittee(
+                    session=session,
+                    version_store=store,
+                    clock=wall_clock,
+                    llm_api_base=settings.llm_api_base,
+                    llm_api_key=settings.llm_api_key,
+                    llm_model=settings.llm_model,
+                )
+                try:
+                    evo = committee.evolve_and_register(
+                        strategy_id=req.strategy_id,
+                        name=req.name,
+                        prompt=req.prompt,
+                        description=req.description,
+                        author=principal.actor_id,
+                        bars=bars,
+                        fundings=fundings,
+                        spec=spec,
+                        max_rounds=req.max_rounds,
+                        target_max_drawdown_pct=target_dd,
+                        initial_usdt=init_usdt,
+                        leverage=lev,
+                    )
+                    champ_ver = evo["champion_version"]
+                    append_audit_log(
+                        session,
+                        actor=principal.actor_id,
+                        action="COMMITTEE_STRATEGY_EVOLVED",
+                        resource_type="strategy",
+                        resource_id=req.strategy_id,
+                        payload={
+                            "champion_version_id": champ_ver.version_id,
+                            "champion_round": evo["champion_round"],
+                            "champion_run_id": evo["champion_run_id"],
+                            "max_rounds": req.max_rounds,
+                            "symbol": req.symbol,
+                            "llm_mode": evo["llm_mode"],
+                        },
+                        ts_ms=wall_clock.now_ms(),
+                    )
+                    session.commit()
+                    return CommitteeEvolutionResponse(
+                        strategy_id=req.strategy_id,
+                        champion_version=_serialize_version(champ_ver),
+                        champion_round=evo["champion_round"],
+                        champion_run_id=evo["champion_run_id"],
+                        llm_mode=evo["llm_mode"],
+                        market_profile=CommitteeMarketProfile(
+                            **evo["market_profile"].model_dump(mode="json")
+                        ),
+                        director_thesis=CommitteeDirectorThesis(
+                            **evo["director_thesis"].model_dump(mode="json")
+                        ),
+                        rounds=[
+                            CommitteeRoundSummary(**r.model_dump(mode="json"))
+                            for r in evo["rounds"]
+                        ],
+                    )
+                except QuantPlatformError as exc:
+                    session.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": exc.code, "message": exc.message},
+                    ) from exc
+                except Exception as exc:
+                    session.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": "COMMITTEE_EVOLUTION_FAILED", "message": str(exc)},
+                    ) from exc
+
+        resp = await asyncio.to_thread(_run_committee_sync)
+        await ws_hub.publish(
+            {
+                "type": "committee_strategy_evolved",
+                "strategy_id": resp.strategy_id,
+                "version_id": resp.champion_version.version_id,
+                "champion_round": resp.champion_round,
+                "champion_run_id": resp.champion_run_id,
+            }
+        )
         return resp
 
     @app.get("/api/v1/strategies/{strategy_id}", response_model=StrategyDetailResponse)

@@ -41,6 +41,87 @@ class NLStrategyGenerateRequest(BaseModel):
     description: str = ""
 
 
+class CommitteeEvolutionRequest(BaseModel):
+    strategy_id: str
+    name: str
+    prompt: str
+    description: str = ""
+    symbol: str = "ETH/USDT:USDT"
+    exchange: str = "binance"
+    max_rounds: int = Field(default=3, ge=1, le=5)
+    target_max_drawdown_pct: str = "0.25"
+    initial_usdt: str = "10000"
+    leverage: str = "2"
+    lookback_bars: int = Field(default=8760, ge=60, le=30000)
+
+
+class CommitteeMarketProfile(BaseModel):
+    exchange: str
+    symbol: str
+    interval: str
+    bar_count: int
+    start_price: str
+    end_price: str
+    buy_and_hold_return_pct: float
+    annualized_volatility_pct: float
+    efficiency_ratio: float
+    regime_label: str
+    regime_summary_zh: str
+
+
+class CommitteeDirectorThesis(BaseModel):
+    archetype: str
+    symbol: str
+    exchange: str
+    market_regime: str
+    thesis_title: str
+    thesis_summary: str
+    entry_logic_zh: str
+    exit_logic_zh: str
+    risk_plan_zh: str
+    fast_window: int
+    slow_window: int
+    rsi_window: int = 14
+    rsi_oversold: str = "30"
+    rsi_overbought: str = "70"
+    base_order_qty: str
+
+
+class CommitteeRoundSummary(BaseModel):
+    round_index: int
+    version_id: str
+    version: int
+    run_id: str
+    mutation_tags: list[str] = Field(default_factory=list)
+    coder_summary: str
+    cumulative_return: float
+    annualized_return: float
+    max_drawdown: float
+    sharpe: float
+    sortino: float
+    win_rate: float
+    payoff_ratio: float
+    closed_trade_count: int
+    turnover_rate: float
+    total_fees_usdt: str
+    total_funding_usdt: str
+    composite_score: float
+    critic_verdict: str
+    critic_findings: list[str] = Field(default_factory=list)
+    recommended_mutations: list[str] = Field(default_factory=list)
+
+
+class CommitteeEvolutionResponse(BaseModel):
+    strategy_id: str
+    champion_version: StrategyVersionResponse
+    champion_round: int
+    champion_run_id: str
+    llm_mode: str
+    market_profile: CommitteeMarketProfile
+    director_thesis: CommitteeDirectorThesis
+    rounds: list[CommitteeRoundSummary]
+
+
 class StrategyParamUpdateRequest(BaseModel):
     params: dict[str, Any]
 

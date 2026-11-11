@@ -949,6 +949,31 @@ def main() -> None:
                     "summary_metrics": sm,
                     "trade_metrics": rep.get("trade_metrics"),
                 }
+        if "strat_eth_committee_demo" not in existing:
+            evo_resp = c.post(
+                "/api/v1/strategies/evolve-committee",
+                json={
+                    "strategy_id": "strat_eth_committee_demo",
+                    "name": "ETH 投研委员会突破演化示范",
+                    "description": "多智能体自动演化示范：总监立意 → 策略编码 → 币安真实 1H 回测 → 风控挑刺迭代（3 轮）",
+                    "prompt": "围绕 ETH/USDT:USDT 设计一套顺大势通道突破策略，控制回撤在 25% 以内，抑制震荡市频繁磨损",
+                    "symbol": "ETH/USDT:USDT",
+                    "exchange": "binance",
+                    "max_rounds": 3,
+                    "target_max_drawdown_pct": "0.25",
+                    "initial_usdt": "10000",
+                    "leverage": "2",
+                    "lookback_bars": 8760,
+                },
+            )
+            evo_resp.raise_for_status()
+            evo_json = evo_resp.json()
+            summary_out["strat_eth_committee_demo"] = {
+                "champion_round": evo_json["champion_round"],
+                "champion_run_id": evo_json["champion_run_id"],
+                "version_id": evo_json["champion_version"]["version_id"],
+            }
+
         print(json.dumps(summary_out, ensure_ascii=False, indent=2))
 
 
