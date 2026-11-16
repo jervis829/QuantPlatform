@@ -365,7 +365,7 @@ export function CreateStrategyModal({
                 </div>
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
                   <div className="space-y-1">
-                    <label className="text-[11px] text-slate-300">T1 趋势周期（根）</label>
+                    <label className="text-[11px] text-slate-300">T1 趋势周期（小时）</label>
                     <input
                       type="number"
                       min={20}
@@ -387,7 +387,7 @@ export function CreateStrategyModal({
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[11px] text-slate-300">T3 确认根数</label>
+                    <label className="text-[11px] text-slate-300">T3 确认周期（小时）</label>
                     <input
                       type="number"
                       min={2}
@@ -400,7 +400,7 @@ export function CreateStrategyModal({
                   </div>
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  时间框架：T1 趋势周期定方向（默认 180 根）+ T2 信号周期找机会（总监自动立意）；开启 T3 后，信号需连续成立 N 根才入场，过滤假突破。
+                  时间框架：T1 趋势周期定方向（默认 180 小时）+ T2 信号周期找机会（总监自动立意）；开启 T3 后，信号需连续成立 N 小时才入场，过滤假突破。
                 </div>
               </div>
             )}

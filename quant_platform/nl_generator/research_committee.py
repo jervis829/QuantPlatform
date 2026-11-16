@@ -608,11 +608,11 @@ class QuantCoderAgent:
     ) -> str:
         extra_params = ""
         if cooldown_bars > 0:
-            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
-            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -677,8 +677,8 @@ from quant_platform.strategy.ui_meta import ui_param
 
 
 class CommitteeBreakoutParams(BaseModel):
-    entry_lookback: int = ui_param({entry_win}, ge=4, le=240, title="突破开仓通道周期", ui_group="signal", unit="Bars", danger_level="safe")
-    exit_lookback: int = ui_param({exit_win}, ge=2, le=180, title="防守离场通道周期", ui_group="signal", unit="Bars", danger_level="safe")
+    entry_lookback: int = ui_param({entry_win}, ge=4, le=240, title="T2 突破开仓通道周期", ui_group="signal", unit="小时", danger_level="safe")
+    exit_lookback: int = ui_param({exit_win}, ge=2, le=180, title="T2 防守离场通道周期", ui_group="signal", unit="小时", danger_level="safe")
 {extra_params}    order_qty: Decimal = ui_param(Decimal("{order_qty}"), title="单笔下单数量", ui_group="risk_sizing", unit="{base_unit}", danger_level="high", danger_hint="放大下单数量将直接提升保证金占用与强平风险")
 
 
@@ -776,11 +776,11 @@ class CommitteeBreakoutStrategy(Strategy):
     ) -> str:
         extra_params = ""
         if cooldown_bars > 0:
-            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
-            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -847,8 +847,8 @@ from quant_platform.strategy.ui_meta import ui_param
 
 
 class CommitteeTrendParams(BaseModel):
-    fast_window: int = ui_param({fast_w}, ge=2, le=200, title="快线均线周期", ui_group="signal", unit="Bars", danger_level="safe")
-    slow_window: int = ui_param({slow_w}, ge=3, le=400, title="慢线均线周期", ui_group="signal", unit="Bars", danger_level="safe")
+    fast_window: int = ui_param({fast_w}, ge=2, le=200, title="T2 信号快线周期", ui_group="signal", unit="小时", danger_level="safe")
+    slow_window: int = ui_param({slow_w}, ge=3, le=400, title="T2 信号慢线周期", ui_group="signal", unit="小时", danger_level="safe")
 {extra_params}    order_qty: Decimal = ui_param(Decimal("{order_qty}"), title="单笔下单数量", ui_group="risk_sizing", unit="{base_unit}", danger_level="high", danger_hint="放大下单数量将直接提升保证金占用与强平风险")
 
 
@@ -944,11 +944,11 @@ class CommitteeTrendStrategy(Strategy):
     ) -> str:
         extra_params = ""
         if cooldown_bars > 0:
-            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
-            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -1009,7 +1009,7 @@ class CommitteeTrendStrategy(Strategy):
 
         if use_bb:
             sig_params = (
-                '    bb_window: int = ui_param(20, ge=5, le=120, title="布林带周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
+                '    bb_window: int = ui_param(20, ge=5, le=120, title="T2 布林带周期", ui_group="signal", unit="小时", danger_level="safe")\n'
                 '    bb_std: Decimal = ui_param(Decimal("2.0"), title="布林带标准差倍数", ui_group="signal", unit="σ", danger_level="safe")\n'
             )
             sig_calc = (
@@ -1021,7 +1021,7 @@ class CommitteeTrendStrategy(Strategy):
             )
         else:
             sig_params = (
-                f'    rsi_window: int = ui_param({rsi_win}, ge=2, le=100, title="RSI 计算周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
+                f'    rsi_window: int = ui_param({rsi_win}, ge=2, le=100, title="T2 RSI 计算周期", ui_group="signal", unit="小时", danger_level="safe")\n'
                 f'    oversold: Decimal = ui_param(Decimal("{rsi_entry}"), title="超卖开多阈值", ui_group="signal", unit="RSI", danger_level="safe")\n'
                 f'    overbought: Decimal = ui_param(Decimal("{rsi_exit}"), title="超买止盈阈值", ui_group="signal", unit="RSI", danger_level="safe")\n'
             )
