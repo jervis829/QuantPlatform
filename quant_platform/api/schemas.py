@@ -53,6 +53,10 @@ class CommitteeEvolutionRequest(BaseModel):
     initial_usdt: str = "10000"
     leverage: str = "2"
     lookback_bars: int = Field(default=8760, ge=60, le=30000)
+    # Timeframe roles (bars on base interval): T1 trend, T2 signal, T3 entry (optional)
+    trend_lookback: int | None = Field(default=None, ge=20, le=400)
+    entry_refinement: bool | None = None
+    entry_lookback: int | None = Field(default=None, ge=2, le=30)
 
 
 class CommitteeMarketProfile(BaseModel):
@@ -133,6 +137,9 @@ class EvolveExistingRequest(BaseModel):
     initial_usdt: str = "10000"
     leverage: str = "2"
     lookback_bars: int = Field(default=8760, ge=60, le=30000)
+    trend_lookback: int | None = Field(default=None, ge=20, le=400)
+    entry_refinement: bool | None = None
+    entry_lookback: int | None = Field(default=None, ge=2, le=30)
 
 
 class EvolveExistingResponse(BaseModel):

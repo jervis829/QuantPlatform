@@ -139,6 +139,9 @@ export function CreateStrategyModal({
   const [maxRounds, setMaxRounds] = useState<number>(3);
   const [lookbackBars, setLookbackBars] = useState<number>(8760);
   const [targetMaxDd, setTargetMaxDd] = useState<string>("0.25");
+  const [trendLookback, setTrendLookback] = useState<number>(180);
+  const [entryRefinement, setEntryRefinement] = useState<boolean>(false);
+  const [entryLookback, setEntryLookback] = useState<number>(5);
 
   React.useEffect(() => {
     if (open) {
@@ -179,6 +182,9 @@ export function CreateStrategyModal({
           initial_usdt: "10000",
           leverage: "2",
           lookback_bars: lookbackBars,
+          trend_lookback: trendLookback,
+          entry_refinement: entryRefinement,
+          entry_lookback: entryLookback,
         });
         return evo.strategy_id;
       }
@@ -356,6 +362,45 @@ export function CreateStrategyModal({
                       <option value="0.30">控制在 30% 内</option>
                     </select>
                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">T1 趋势周期（根）</label>
+                    <input
+                      type="number"
+                      min={20}
+                      max={400}
+                      value={trendLookback}
+                      onChange={(e) => setTrendLookback(Math.max(20, Math.min(400, Number(e.target.value) || 180)))}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">T3 入场确认（第3档）</label>
+                    <select
+                      value={entryRefinement ? "on" : "off"}
+                      onChange={(e) => setEntryRefinement(e.target.value === "on")}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white"
+                    >
+                      <option value="off">关闭（默认 2 档）</option>
+                      <option value="on">开启（3 档精细入场）</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-300">T3 确认根数</label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={30}
+                      value={entryLookback}
+                      disabled={!entryRefinement}
+                      onChange={(e) => setEntryLookback(Math.max(2, Math.min(30, Number(e.target.value) || 5)))}
+                      className="h-8 w-full rounded border border-slate-700 bg-slate-950 px-2 text-xs text-white disabled:opacity-40"
+                    />
+                  </div>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  时间框架：T1 趋势周期定方向（默认 180 根）+ T2 信号周期找机会（总监自动立意）；开启 T3 后，信号需连续成立 N 根才入场，过滤假突破。
                 </div>
               </div>
             )}

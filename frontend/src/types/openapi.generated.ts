@@ -77,6 +77,9 @@ export interface CommitteeEvolutionRequest {
   initial_usdt?: string;
   leverage?: string;
   lookback_bars?: number;
+  trend_lookback?: number | null;
+  entry_refinement?: boolean | null;
+  entry_lookback?: number | null;
 }
 
 export interface CommitteeEvolutionResponse {
@@ -168,6 +171,9 @@ export interface EvolveExistingRequest {
   initial_usdt?: string;
   leverage?: string;
   lookback_bars?: number;
+  trend_lookback?: number | null;
+  entry_refinement?: boolean | null;
+  entry_lookback?: number | null;
 }
 
 export interface EvolveExistingResponse {

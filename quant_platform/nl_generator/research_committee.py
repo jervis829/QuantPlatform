@@ -78,6 +78,12 @@ class DirectorThesis(BaseModel):
     rsi_oversold: str = "30"
     rsi_overbought: str = "70"
     base_order_qty: str
+    # --- Timeframe roles (in bars on the strategy base interval) ---
+    # T1 Trend tier: macro EMA lookback for direction filter (default 2-tier ON)
+    trend_lookback: int = 180
+    # T3 Entry tier: optional confirmation refinement (3rd tier, OFF by default)
+    entry_refinement: bool = False
+    entry_lookback: int = 5
 
 
 class RiskCritique(BaseModel):
@@ -248,6 +254,9 @@ class DirectorAgent:
         bars: list[Bar],
         spec: SymbolSpec,
         initial_usdt: Decimal,
+        trend_lookback: int | None = None,
+        entry_refinement: bool | None = None,
+        entry_lookback: int | None = None,
     ) -> DirectorThesis:
         text = prompt.strip()
         lower = text.lower()
@@ -312,6 +321,21 @@ class DirectorAgent:
             "bollinger_reversion": "价格回归布林带中轨上方或触发保护止损时平仓",
         }[archetype]
 
+        # --- Timeframe roles: explicit overrides win, else parse prompt, else defaults ---
+        # T1 trend lookback: "趋势周期180" / "trend 200" / "macro 150"
+        trend_lb = trend_lookback
+        if trend_lb is None:
+            m_trend = re.search(r"(?:趋势周期|趋势|trend|macro)\D*(\d{2,3})", lower)
+            trend_lb = int(m_trend.group(1)) if m_trend else 180
+        trend_lb = max(20, min(400, int(trend_lb)))
+
+        # T3 entry refinement: "入场确认" / "三周期" / "entry" enables 3rd tier
+        entry_ref = entry_refinement
+        if entry_ref is None:
+            entry_ref = any(k in text for k in ("入场确认", "三周期", "多周期", "entry confirm"))
+        entry_lb = entry_lookback if entry_lookback is not None else 5
+        entry_lb = max(2, min(30, int(entry_lb)))
+
         return DirectorThesis(
             archetype=archetype,
             symbol=spec.symbol,
@@ -331,6 +355,9 @@ class DirectorAgent:
             fast_window=max(2, fast_w),
             slow_window=max(fast_w + 2, slow_w),
             base_order_qty=format_decimal(order_qty),
+            trend_lookback=trend_lb,
+            entry_refinement=entry_ref,
+            entry_lookback=entry_lb,
         )
 
 
@@ -462,8 +489,12 @@ class QuantCoderAgent:
         asym_hold = "WIDEN_PROFIT_TARGET" in active_mutations
 
         is_long_series = bar_count >= 600
-        macro_win = 180 if is_long_series else max(25, min(60, bar_count // 3))
+        # T1 trend tier: configurable lookback from Director thesis (no hardcoding)
+        macro_win = thesis.trend_lookback if is_long_series else max(25, min(60, bar_count // 3))
         cooldown_bars = 12 if (widen and is_long_series) else (3 if widen else 0)
+        # T3 entry tier: optional confirmation refinement (3rd timeframe role)
+        entry_refine = thesis.entry_refinement
+        entry_confirm = thesis.entry_lookback
 
         fast_w = thesis.fast_window
         slow_w = thesis.slow_window
@@ -499,6 +530,8 @@ class QuantCoderAgent:
                 notes.append(f"注入 {Decimal(stop_pct)*100:.1f}% 硬止损 + {Decimal(trail_pct)*100:.1f}% 峰值移动止盈保护")
             if asym_hold:
                 notes.append("放宽右侧趋势持仓容忍度，提升单笔盈亏比右尾捕获能力")
+            if entry_refine:
+                notes.append(f"启用第 3 档入场确认：信号连续成立 {entry_confirm} 根 K 线后才开仓，过滤假突破")
 
         summary_zh = "；".join(notes) if notes else "完成策略代码构建"
         base_unit = thesis.symbol.split("/")[0] if "/" in thesis.symbol else "Asset"
@@ -517,6 +550,8 @@ class QuantCoderAgent:
                 use_stop_trail=stop_trail,
                 stop_pct=stop_pct,
                 trail_pct=trail_pct,
+                entry_refine=entry_refine,
+                entry_confirm=entry_confirm,
             )
             return code, summary_zh
 
@@ -532,6 +567,8 @@ class QuantCoderAgent:
                 use_stop_trail=stop_trail,
                 stop_pct=stop_pct,
                 trail_pct=trail_pct,
+                entry_refine=entry_refine,
+                entry_confirm=entry_confirm,
             )
             return code, summary_zh
 
@@ -548,6 +585,8 @@ class QuantCoderAgent:
             use_stop_trail=stop_trail,
             stop_pct=stop_pct,
             trail_pct=trail_pct,
+            entry_refine=entry_refine,
+            entry_confirm=entry_confirm,
         )
         return code, summary_zh
 
@@ -556,6 +595,8 @@ class QuantCoderAgent:
         *,
         entry_win: int,
         exit_win: int,
+        entry_refine: bool = False,
+        entry_confirm: int = 5,
         order_qty: str,
         base_unit: str,
         cooldown_bars: int,
@@ -570,6 +611,8 @@ class QuantCoderAgent:
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_macro:
             extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+        if entry_refine:
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -586,6 +629,16 @@ class QuantCoderAgent:
             "        in_cooldown = (self._bar_idx - self._last_exit_idx) < self.params.cooldown_bars\n"
             if cooldown_bars > 0
             else "        in_cooldown = False\n"
+        )
+        entry_gate = (
+            "        _sig_now = cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok and bar.close > prev_channel_high\n"
+            "        if _sig_now:\n"
+            "            self._signal_streak += 1\n"
+            "        else:\n"
+            "            self._signal_streak = 0\n"
+            "        if _sig_now and self._signal_streak >= self.params.entry_confirm_bars:\n"
+            if entry_refine
+            else "        if cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok and bar.close > prev_channel_high:\n"
         )
         stop_logic = ""
         if use_stop_trail:
@@ -643,6 +696,7 @@ class CommitteeBreakoutStrategy(Strategy):
         self._last_exit_idx = -9999
         self._entry_px = Decimal("0")
         self._peak_px = Decimal("0")
+        self._signal_streak = 0
         return None
 
     def on_bar(self, bar: Bar):
@@ -667,7 +721,7 @@ class CommitteeBreakoutStrategy(Strategy):
         pos = self.ctx.get_position(bar.exchange, bar.symbol)
         cur_qty = pos.quantity if pos is not None else Decimal("0")
 
-{stop_logic}{macro_check}{cd_check}        if cur_qty == Decimal("0") and not in_cooldown and macro_ok and bar.close > prev_channel_high:
+{stop_logic}{macro_check}{cd_check}{entry_gate}
             self._entry_px = bar.close
             self._peak_px = bar.high
             return [
@@ -709,6 +763,8 @@ class CommitteeBreakoutStrategy(Strategy):
         fn_name: str,
         fast_w: int,
         slow_w: int,
+        entry_refine: bool = False,
+        entry_confirm: int = 5,
         order_qty: str,
         base_unit: str,
         cooldown_bars: int,
@@ -723,6 +779,8 @@ class CommitteeBreakoutStrategy(Strategy):
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_macro:
             extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+        if entry_refine:
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -734,6 +792,16 @@ class CommitteeBreakoutStrategy(Strategy):
             "        macro_ok = len(self._closes) >= self.params.macro_ema_window and bar.close > ema(self._closes[-self.params.macro_ema_window * 2:], self.params.macro_ema_window)\n"
             if use_macro
             else "        macro_ok = True\n"
+        )
+        ma_entry_gate = (
+            "            _sig_up = crossed_up and cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok\n"
+            "            if _sig_up:\n"
+            "                self._signal_streak += 1\n"
+            "            elif cur_fast <= cur_slow:\n"
+            "                self._signal_streak = 0\n"
+            "            if _sig_up and self._signal_streak >= self.params.entry_confirm_bars:\n"
+            if entry_refine
+            else "            if crossed_up and cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok:\n"
         )
         cd_check = (
             "        in_cooldown = (self._bar_idx - self._last_exit_idx) < self.params.cooldown_bars\n"
@@ -798,6 +866,7 @@ class CommitteeTrendStrategy(Strategy):
         self._last_exit_idx = -9999
         self._entry_px = Decimal("0")
         self._peak_px = Decimal("0")
+        self._signal_streak = 0
         return None
 
     def on_bar(self, bar: Bar):
@@ -818,7 +887,7 @@ class CommitteeTrendStrategy(Strategy):
         if self._prev_fast is not None and self._prev_slow is not None:
             crossed_up = self._prev_fast <= self._prev_slow and cur_fast > cur_slow
             crossed_down = self._prev_fast >= self._prev_slow and cur_fast < cur_slow
-            if crossed_up and cur_qty == Decimal("0") and not in_cooldown and macro_ok:
+{ma_entry_gate}
                 self._entry_px = bar.close
                 self._peak_px = bar.high
                 intents = [
@@ -860,6 +929,8 @@ class CommitteeTrendStrategy(Strategy):
         *,
         archetype: str,
         rsi_win: int,
+        entry_refine: bool = False,
+        entry_confirm: int = 5,
         rsi_entry: str,
         rsi_exit: str,
         order_qty: str,
@@ -876,6 +947,8 @@ class CommitteeTrendStrategy(Strategy):
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="平仓冷却周期", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_macro:
             extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="宏观趋势过滤均线", ui_group="signal", unit="Bars", danger_level="safe")\n'
+        if entry_refine:
+            extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="入场确认连续根数（第3档）", ui_group="signal", unit="Bars", danger_level="safe")\n'
         if use_stop_trail:
             extra_params += (
                 f'    stop_loss_pct: Decimal = ui_param(Decimal("{stop_pct}"), title="硬止损比例", ui_group="risk_sizing", unit="比例", danger_level="caution")\n'
@@ -891,6 +964,16 @@ class CommitteeTrendStrategy(Strategy):
             "        macro_ok = len(self._closes) < self.params.macro_ema_window or bar.close >= ema(self._closes[-self.params.macro_ema_window * 2:], self.params.macro_ema_window) * Decimal(\"0.94\")\n"
             if use_macro
             else "        macro_ok = True\n"
+        )
+        rev_entry_gate = (
+            "        _sig_buy = buy_cond and cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok\n"
+            "        if _sig_buy:\n"
+            "            self._signal_streak += 1\n"
+            "        else:\n"
+            "            self._signal_streak = 0\n"
+            "        if _sig_buy and self._signal_streak >= self.params.entry_confirm_bars:\n"
+            if entry_refine
+            else "        if buy_cond and cur_qty == Decimal(\"0\") and not in_cooldown and macro_ok:\n"
         )
         cd_check = (
             "        in_cooldown = (self._bar_idx - self._last_exit_idx) < self.params.cooldown_bars\n"
@@ -976,6 +1059,7 @@ class CommitteeReversionStrategy(Strategy):
         self._last_exit_idx = -9999
         self._entry_px = Decimal("0")
         self._peak_px = Decimal("0")
+        self._signal_streak = 0
         return None
 
     def on_bar(self, bar: Bar):
@@ -986,7 +1070,7 @@ class CommitteeReversionStrategy(Strategy):
 {sig_calc}
         pos = self.ctx.get_position(bar.exchange, bar.symbol)
         cur_qty = pos.quantity if pos is not None else Decimal("0")
-{stop_logic}{macro_check}{cd_check}        if buy_cond and cur_qty == Decimal("0") and not in_cooldown and macro_ok:
+{stop_logic}{macro_check}{cd_check}{rev_entry_gate}
             self._entry_px = bar.close
             self._peak_px = bar.high
             return [
@@ -1200,6 +1284,9 @@ class AutoResearchCommittee:
         initial_usdt: StrictDecimal = Decimal("10000"),
         leverage: StrictDecimal = Decimal("2"),
         description: str = "",
+        trend_lookback: int | None = None,
+        entry_refinement: bool | None = None,
+        entry_lookback: int | None = None,
     ) -> dict[str, Any]:
         rounds_cap = max(1, min(5, int(max_rounds)))
         profile = build_market_regime_profile(bars, exchange=spec.exchange, symbol=spec.symbol)
@@ -1209,6 +1296,9 @@ class AutoResearchCommittee:
             bars=bars,
             spec=spec,
             initial_usdt=initial_usdt,
+            trend_lookback=trend_lookback,
+            entry_refinement=entry_refinement,
+            entry_lookback=entry_lookback,
         )
 
         active_mutations: list[str] = []
@@ -1515,6 +1605,9 @@ class AutoResearchCommittee:
         initial_usdt: StrictDecimal = Decimal("10000"),
         leverage: StrictDecimal = Decimal("2"),
         shadow_report: dict[str, Any] | None = None,
+        trend_lookback: int | None = None,
+        entry_refinement: bool | None = None,
+        entry_lookback: int | None = None,
     ) -> dict[str, Any]:
         """
         Evolve an existing strategy version through the committee loop.
@@ -1563,6 +1656,9 @@ class AutoResearchCommittee:
                 bars=bars,
                 spec=spec,
                 initial_usdt=initial_usdt,
+                trend_lookback=trend_lookback,
+                entry_refinement=entry_refinement,
+                entry_lookback=entry_lookback,
             )
 
         # ---- Round 0: immutable baseline backtest of existing version ----

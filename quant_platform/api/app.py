@@ -1305,6 +1305,9 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                         target_max_drawdown_pct=target_dd,
                         initial_usdt=init_usdt,
                         leverage=lev,
+                        trend_lookback=req.trend_lookback,
+                        entry_refinement=req.entry_refinement,
+                        entry_lookback=req.entry_lookback,
                     )
                     champ_ver = evo["champion_version"]
                     append_audit_log(
@@ -1435,6 +1438,9 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                         initial_usdt=init_usdt,
                         leverage=lev,
                         shadow_report=shadow_report_dict,
+                        trend_lookback=req.trend_lookback,
+                        entry_refinement=req.entry_refinement,
+                        entry_lookback=req.entry_lookback,
                     )
                     champ_ver = evo["champion_version"]
                     append_audit_log(

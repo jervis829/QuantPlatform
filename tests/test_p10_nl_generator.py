@@ -687,3 +687,81 @@ def test_evolution_cycle_state_persists_across_sessions(tmp_path: Path) -> None:
     # Interval gate now engages: 2000 + 3 days > now(2500) -> not due
     interval_ms = 3 * 86_400_000
     assert 2_500 - persisted.last_evolved_ms < interval_ms  # gate blocks re-evolution
+
+
+def test_timeframe_roles_configurable_two_tier_default_three_tier_optional(tmp_path: Path) -> None:
+    """
+    Timeframe roles (T1 trend / T2 signal / T3 entry):
+    1. Default 2-tier: trend_lookback=180, entry_refinement=False, no
+       entry_confirm_bars param in generated strategy.
+    2. Explicit 3-tier: trend_lookback=200, entry_refinement=True produces
+       entry_confirm_bars param and streak-gated entry logic.
+    3. Prompt parsing: "趋势周期200" + "入场确认" enables T1/T3 without API fields.
+    4. No hardcoded periods: macro EMA window comes from thesis.trend_lookback.
+    """
+    from quant_platform.data.historical import load_real_binance_1h_dataset
+    from quant_platform.nl_generator import AutoResearchCommittee
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'p10_tf.db'}")
+    init_db(engine)
+    sf = build_session_factory(engine)
+    clock = SimulatedClock(1_750_000_000_000)
+    sandbox = ContainerStrategySandbox()
+
+    bars, fundings = load_real_binance_1h_dataset("binance", "ETH/USDT:USDT")
+    bars = bars[-1200:]
+    cutoff = bars[0].open_time_ms
+    fundings = [f for f in fundings if f.funding_ts_ms >= cutoff]
+    eth_spec = SymbolSpec(
+        exchange="binance", symbol="ETH/USDT:USDT", contract_type=ContractType.PERPETUAL,
+        base_asset="ETH", quote_asset="USDT", margin_asset="USDT", contract_size=Decimal("1"),
+        tick_size=Decimal("0.01"), step_size=Decimal("0.001"), min_qty=Decimal("0.001"),
+        max_qty=Decimal("10000"), min_notional=Decimal("5"), max_leverage=Decimal("20"),
+        maker_fee=Decimal("0.0002"), taker_fee=Decimal("0.0004"), effective_from_ms=0,
+    )
+
+    with sf() as session:
+        store = StrategyVersionStore(session=session, sandbox=sandbox)
+        committee = AutoResearchCommittee(session=session, version_store=store, clock=clock)
+
+        # 1. Default 2-tier
+        evo2 = committee.evolve_and_register(
+            strategy_id="strat_tf_2tier", name="2-Tier Default",
+            prompt="ETH 顺大势通道突破，控制回撤",
+            author="test", bars=bars, fundings=fundings, spec=eth_spec, max_rounds=1,
+        )
+        session.commit()
+        t2 = evo2["director_thesis"]
+        assert t2.trend_lookback == 180
+        assert t2.entry_refinement is False
+        p2 = evo2["champion_version"].params_json
+        assert "entry_confirm_bars" not in p2
+
+        # 2. Explicit 3-tier via API fields
+        evo3 = committee.evolve_and_register(
+            strategy_id="strat_tf_3tier", name="3-Tier Explicit",
+            prompt="ETH 顺大势通道突破",
+            author="test", bars=bars, fundings=fundings, spec=eth_spec, max_rounds=1,
+            trend_lookback=200, entry_refinement=True, entry_lookback=3,
+        )
+        session.commit()
+        t3 = evo3["director_thesis"]
+        assert t3.trend_lookback == 200
+        assert t3.entry_refinement is True
+        assert t3.entry_lookback == 3
+        p3 = evo3["champion_version"].params_json
+        assert p3.get("entry_confirm_bars") == 3
+        # T1 trend window is configurable, not hardcoded 180
+        if "macro_ema_window" in p3:
+            assert p3["macro_ema_window"] == 200
+
+        # 3. Prompt-parsed timeframe roles
+        evo4 = committee.evolve_and_register(
+            strategy_id="strat_tf_prompt", name="3-Tier Prompt",
+            prompt="ETH 突破策略，趋势周期150，入场确认",
+            author="test", bars=bars, fundings=fundings, spec=eth_spec, max_rounds=1,
+        )
+        session.commit()
+        t4 = evo4["director_thesis"]
+        assert t4.trend_lookback == 150
+        assert t4.entry_refinement is True
