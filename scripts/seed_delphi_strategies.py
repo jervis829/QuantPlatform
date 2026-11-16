@@ -968,11 +968,49 @@ def main() -> None:
             )
             evo_resp.raise_for_status()
             evo_json = evo_resp.json()
+            demo_vid = evo_json["champion_version"]["version_id"]
             summary_out["strat_eth_committee_demo"] = {
                 "champion_round": evo_json["champion_round"],
                 "champion_run_id": evo_json["champion_run_id"],
-                "version_id": evo_json["champion_version"]["version_id"],
+                "version_id": demo_vid,
             }
+
+            # Continuous evolution loop demo: approve champion -> shadow run -> enable 3-day cycle
+            try:
+                c.post(
+                    f"/api/v1/strategies/versions/{demo_vid}/approve",
+                    json={"note": "持续进化闭环演示：批准胜出版本用于模拟盘"},
+                ).raise_for_status()
+                sh_resp = c.post(
+                    "/api/v1/runs/launch",
+                    json={
+                        "strategy_id": "strat_eth_committee_demo",
+                        "version_id": demo_vid,
+                        "env": "shadow",
+                        "exchange": "binance",
+                        "symbol": "ETH/USDT:USDT",
+                        "initial_usdt": "10000",
+                        "async_mode": False,
+                    },
+                )
+                sh_resp.raise_for_status()
+                shadow_run_id = sh_resp.json()["run_id"]
+                c.post(
+                    "/api/v1/strategies/strat_eth_committee_demo/evolution-cycle",
+                    json={
+                        "enabled": True,
+                        "interval_days": 3,
+                        "exchange": "binance",
+                        "symbol": "ETH/USDT:USDT",
+                        "max_rounds": 2,
+                        "target_max_drawdown_pct": "0.25",
+                        "lookback_bars": 8760,
+                    },
+                ).raise_for_status()
+                summary_out["strat_eth_committee_demo"]["shadow_run_id"] = shadow_run_id
+                summary_out["strat_eth_committee_demo"]["evolution_cycle"] = "enabled (3-day interval)"
+            except Exception as demo_exc:  # noqa: BLE001 - demo seeding must not fail the whole seed
+                summary_out["strat_eth_committee_demo"]["evolution_loop_demo_error"] = str(demo_exc)
 
         print(json.dumps(summary_out, ensure_ascii=False, indent=2))
 

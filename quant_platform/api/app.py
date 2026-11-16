@@ -43,6 +43,11 @@ from quant_platform.api.schemas import (
     CommitteeEvolutionResponse,
     CommitteeMarketProfile,
     CommitteeRoundSummary,
+    EvolveExistingRequest,
+    EvolveExistingResponse,
+    EvolutionCycleConfigRequest,
+    EvolutionCycleStatusResponse,
+    ShadowAnalysisResponse,
     OrderFillsDrilldownResponse,
     PreflightAccountCheck,
     PreflightBlockingReason,
@@ -107,6 +112,7 @@ from quant_platform.db.schema import (
     AuditLogRecord,
     BalanceSnapshotRecord,
     EquityCurveRecord,
+    EvolutionCycleRecord,
     FillRecord,
     OrderRecord,
     ReconciliationReportRecord,
@@ -132,6 +138,7 @@ from quant_platform.nl_generator import (
     DeterministicRuleLLMProvider,
     NLStrategyGenerationPipeline,
     OpenAICompatibleLLMProvider,
+    ShadowPerformanceAnalyzer,
 )
 from quant_platform.observability.metrics import PlatformMetrics
 from quant_platform.reconciliation import ThreeTierReconciler
@@ -344,6 +351,30 @@ def _serialize_version(v: StrategyVersionRecord) -> StrategyVersionResponse:
     )
 
 
+def _serialize_evolution_cycle(row: EvolutionCycleRecord) -> EvolutionCycleStatusResponse:
+    next_due: int | None = None
+    if row.enabled and row.last_evolved_ms is not None:
+        next_due = row.last_evolved_ms + int(row.interval_days) * 86_400_000
+    return EvolutionCycleStatusResponse(
+        strategy_id=row.strategy_id,
+        enabled=bool(row.enabled),
+        interval_days=int(row.interval_days),
+        exchange=row.exchange,
+        symbol=row.symbol,
+        max_rounds=int(row.max_rounds),
+        target_max_drawdown_pct=format_decimal(row.target_max_drawdown_pct),
+        lookback_bars=int(row.lookback_bars),
+        last_evolved_ms=row.last_evolved_ms,
+        last_shadow_run_id=row.last_shadow_run_id,
+        last_champion_version_id=row.last_champion_version_id,
+        last_status=row.last_status,
+        last_error=row.last_error,
+        next_evolution_due_ms=next_due,
+        created_ms=int(row.created_ms),
+        updated_ms=int(row.updated_ms),
+    )
+
+
 _SEV_ORDER_WEIGHT = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
 
 
@@ -449,6 +480,156 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
         ("binance", "usdtm_perp_ws"): {"healthy": True, "last_heartbeat_ms": wall_clock.now_ms()},
         ("binance", "user_data_ws"): {"healthy": True, "last_heartbeat_ms": wall_clock.now_ms()},
     }
+
+    # ------------------------------------------------------------------
+    # Continuous Evolution Loop scheduler (shadow -> analyze -> evolve -> repeat)
+    # Daemon thread: every 60s, for each enabled & due cycle, analyze the latest
+    # COMPLETED shadow run and evolve a new PENDING version. Human approval
+    # remains mandatory before the next shadow run (Red Line 7).
+    # ------------------------------------------------------------------
+    import threading as _threading
+
+    _cycle_stop = _threading.Event()
+    app.state.evolution_cycle_stop = _cycle_stop
+
+    def _evolution_cycle_worker() -> None:
+        settings = get_settings()
+        while not _cycle_stop.wait(60.0):
+            try:
+                now_ms = wall_clock.now_ms()
+                with sf() as session:
+                    due_cycles = list(
+                        session.execute(
+                            select(EvolutionCycleRecord).where(
+                                EvolutionCycleRecord.enabled.is_(True)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                for cycle in due_cycles:
+                    try:
+                        interval_ms = int(cycle.interval_days) * 86_400_000
+                        if (
+                            cycle.last_evolved_ms is not None
+                            and now_ms - int(cycle.last_evolved_ms) < interval_ms
+                        ):
+                            continue
+
+                        with sf() as session:
+                            latest_shadow = session.execute(
+                                select(RunOrmRecord)
+                                .where(
+                                    RunOrmRecord.strategy_id == cycle.strategy_id,
+                                    RunOrmRecord.env == "shadow",
+                                    RunOrmRecord.status == "COMPLETED",
+                                )
+                                .order_by(RunOrmRecord.started_at_ms.desc())
+                                .limit(1)
+                            ).scalar_one_or_none()
+                            if latest_shadow is None:
+                                continue
+                            if (
+                                cycle.last_shadow_run_id is not None
+                                and cycle.last_shadow_run_id == latest_shadow.run_id
+                            ):
+                                continue
+
+                            analyzer = ShadowPerformanceAnalyzer()
+                            shadow_rep = analyzer.analyze(
+                                session=session,
+                                run_id=latest_shadow.run_id,
+                                env="shadow",
+                            )
+                            shadow_dict = shadow_rep.model_dump(mode="json")
+
+                            raw_bars, raw_fundings = _resolve_dataset_for_strategy(
+                                cycle.exchange, cycle.symbol, cycle.strategy_id
+                            )
+                            bars = (
+                                raw_bars[-cycle.lookback_bars :]
+                                if len(raw_bars) > cycle.lookback_bars
+                                else raw_bars
+                            )
+                            cutoff_ms = bars[0].open_time_ms if bars else 0
+                            fundings = [f for f in raw_fundings if f.funding_ts_ms >= cutoff_ms]
+                            spec = _default_perp_spec(cycle.symbol, cycle.exchange)
+
+                            store = StrategyVersionStore(session=session, sandbox=sandbox)
+                            committee = AutoResearchCommittee(
+                                session=session,
+                                version_store=store,
+                                clock=wall_clock,
+                                llm_api_base=settings.llm_api_base,
+                                llm_api_key=settings.llm_api_key,
+                                llm_model=settings.llm_model,
+                            )
+                            evo = committee.evolve_existing_strategy(
+                                strategy_id=cycle.strategy_id,
+                                prompt="持续进化闭环：基于模拟盘实证诊断自动演化",
+                                author="evolution_cycle_scheduler",
+                                bars=bars,
+                                fundings=fundings,
+                                spec=spec,
+                                max_rounds=int(cycle.max_rounds),
+                                target_max_drawdown_pct=cycle.target_max_drawdown_pct,
+                                shadow_report=shadow_dict,
+                            )
+                            champ_ver = evo["champion_version"]
+                            cycle.last_evolved_ms = wall_clock.now_ms()
+                            cycle.last_shadow_run_id = latest_shadow.run_id
+                            cycle.last_champion_version_id = champ_ver.version_id
+                            cycle.last_status = "EVOLVED"
+                            cycle.last_error = None
+                            cycle.updated_ms = wall_clock.now_ms()
+                            append_audit_log(
+                                session,
+                                actor="evolution_cycle_scheduler",
+                                action="EVOLUTION_CYCLE_TRIGGERED",
+                                resource_type="strategy",
+                                resource_id=cycle.strategy_id,
+                                payload={
+                                    "shadow_run_id": latest_shadow.run_id,
+                                    "champion_version_id": champ_ver.version_id,
+                                    "baseline_won": evo["baseline_won"],
+                                    "diagnosis_tags": shadow_dict.get("diagnosis_tags"),
+                                },
+                                ts_ms=wall_clock.now_ms(),
+                            )
+                            session.commit()
+                            ws_hub.publish_sync(
+                                {
+                                    "type": "evolution_cycle_completed",
+                                    "strategy_id": cycle.strategy_id,
+                                    "shadow_run_id": latest_shadow.run_id,
+                                    "version_id": champ_ver.version_id,
+                                    "baseline_won": evo["baseline_won"],
+                                }
+                            )
+                    except Exception as exc:  # noqa: BLE001 - scheduler must never crash
+                        try:
+                            with sf() as err_session:
+                                err_row = err_session.execute(
+                                    select(EvolutionCycleRecord).where(
+                                        EvolutionCycleRecord.strategy_id == cycle.strategy_id
+                                    )
+                                ).scalar_one_or_none()
+                                if err_row is not None:
+                                    err_row.last_status = "ERROR"
+                                    err_row.last_error = str(exc)[:512]
+                                    err_row.updated_ms = wall_clock.now_ms()
+                                    err_session.commit()
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+
+    _cycle_thread = _threading.Thread(
+        target=_evolution_cycle_worker,
+        name="evolution-cycle-scheduler",
+        daemon=True,
+    )
+    _cycle_thread.start()
 
     @app.get("/metrics", include_in_schema=False)
     def get_prometheus_metrics() -> Response:
@@ -1027,6 +1208,237 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             }
         )
         return resp
+
+    @app.post(
+        "/api/v1/strategies/{strategy_id}/evolve", response_model=EvolveExistingResponse
+    )
+    async def evolve_existing_strategy(
+        strategy_id: str,
+        req: EvolveExistingRequest,
+        principal: ActorPrincipal = Depends(require_min_role(Role.RESEARCHER)),
+    ) -> EvolveExistingResponse:
+        """Evolve an existing strategy version (continuous evolution loop).
+
+        Round 0 backtests the existing base version as-is; rounds 1..N synthesize
+        structural variants. If shadow_run_id is provided, the shadow performance
+        diagnosis takes priority in prescribing mutations. Champion is chosen
+        across all rounds including the baseline (never degrades). All new
+        versions remain PENDING for mandatory human approval.
+        """
+        if app.state.maintenance_mode:
+            raise HTTPException(status_code=503, detail="Platform is in maintenance mode")
+
+        settings = get_settings()
+        target_dd = to_strict_decimal(req.target_max_drawdown_pct, "target_max_drawdown_pct")
+        init_usdt = to_strict_decimal(req.initial_usdt, "initial_usdt")
+        lev = to_strict_decimal(req.leverage, "leverage")
+        spec = _default_perp_spec(req.symbol, req.exchange)
+
+        def _run_evolve_sync() -> EvolveExistingResponse:
+            raw_bars, raw_fundings = _resolve_dataset_for_strategy(
+                req.exchange, req.symbol, strategy_id
+            )
+            bars = raw_bars[-req.lookback_bars :] if len(raw_bars) > req.lookback_bars else raw_bars
+            cutoff_ms = bars[0].open_time_ms if bars else 0
+            fundings = [f for f in raw_fundings if f.funding_ts_ms >= cutoff_ms]
+
+            with sf() as session:
+                store = StrategyVersionStore(session=session, sandbox=sandbox)
+                # Resolve shadow performance diagnosis if requested
+                shadow_report_dict: dict[str, Any] | None = None
+                if req.shadow_run_id:
+                    analyzer = ShadowPerformanceAnalyzer()
+                    try:
+                        shadow_rep = analyzer.analyze(
+                            session=session, run_id=req.shadow_run_id, env="shadow"
+                        )
+                        shadow_report_dict = shadow_rep.model_dump(mode="json")
+                    except KeyError as exc:
+                        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+                committee = AutoResearchCommittee(
+                    session=session,
+                    version_store=store,
+                    clock=wall_clock,
+                    llm_api_base=settings.llm_api_base,
+                    llm_api_key=settings.llm_api_key,
+                    llm_model=settings.llm_model,
+                )
+                try:
+                    evo = committee.evolve_existing_strategy(
+                        strategy_id=strategy_id,
+                        base_version_id=req.base_version_id,
+                        prompt=req.prompt,
+                        author=principal.actor_id,
+                        bars=bars,
+                        fundings=fundings,
+                        spec=spec,
+                        max_rounds=req.max_rounds,
+                        target_max_drawdown_pct=target_dd,
+                        initial_usdt=init_usdt,
+                        leverage=lev,
+                        shadow_report=shadow_report_dict,
+                    )
+                    champ_ver = evo["champion_version"]
+                    append_audit_log(
+                        session,
+                        actor=principal.actor_id,
+                        action="STRATEGY_EVOLVED_EXISTING",
+                        resource_type="strategy",
+                        resource_id=strategy_id,
+                        payload={
+                            "base_version_id": evo["base_version_id"],
+                            "champion_version_id": champ_ver.version_id,
+                            "champion_round": evo["champion_round"],
+                            "champion_run_id": evo["champion_run_id"],
+                            "baseline_won": evo["baseline_won"],
+                            "shadow_run_id": req.shadow_run_id,
+                            "max_rounds": req.max_rounds,
+                            "symbol": req.symbol,
+                            "llm_mode": evo["llm_mode"],
+                        },
+                        ts_ms=wall_clock.now_ms(),
+                    )
+                    session.commit()
+                    return EvolveExistingResponse(
+                        strategy_id=strategy_id,
+                        base_version_id=evo["base_version_id"],
+                        champion_version=_serialize_version(champ_ver),
+                        champion_round=evo["champion_round"],
+                        champion_run_id=evo["champion_run_id"],
+                        baseline_won=evo["baseline_won"],
+                        llm_mode=evo["llm_mode"],
+                        market_profile=CommitteeMarketProfile(
+                            **evo["market_profile"].model_dump(mode="json")
+                        ),
+                        director_thesis=CommitteeDirectorThesis(
+                            **evo["director_thesis"].model_dump(mode="json")
+                        ),
+                        rounds=[
+                            CommitteeRoundSummary(**r.model_dump(mode="json"))
+                            for r in evo["rounds"]
+                        ],
+                        shadow_report=evo.get("shadow_report"),
+                    )
+                except QuantPlatformError as exc:
+                    session.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": exc.code, "message": exc.message},
+                    ) from exc
+                except KeyError as exc:
+                    session.rollback()
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
+                except Exception as exc:
+                    session.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": "EVOLUTION_FAILED", "message": str(exc)},
+                    ) from exc
+
+        resp = await asyncio.to_thread(_run_evolve_sync)
+        await ws_hub.publish(
+            {
+                "type": "strategy_evolved_existing",
+                "strategy_id": resp.strategy_id,
+                "base_version_id": resp.base_version_id,
+                "version_id": resp.champion_version.version_id,
+                "champion_round": resp.champion_round,
+                "baseline_won": resp.baseline_won,
+            }
+        )
+        return resp
+
+    @app.get("/api/v1/runs/shadow/{run_id}/analysis", response_model=ShadowAnalysisResponse)
+    def get_shadow_analysis(
+        run_id: str,
+        _: ActorPrincipal = Depends(require_min_role(Role.VIEWER)),
+    ) -> ShadowAnalysisResponse:
+        """Analyze shadow trading fills into a structured performance diagnosis."""
+        with sf() as session:
+            analyzer = ShadowPerformanceAnalyzer()
+            try:
+                rep = analyzer.analyze(session=session, run_id=run_id, env="shadow")
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return ShadowAnalysisResponse(**rep.model_dump(mode="json"))
+
+    @app.post(
+        "/api/v1/strategies/{strategy_id}/evolution-cycle",
+        response_model=EvolutionCycleStatusResponse,
+    )
+    def configure_evolution_cycle(
+        strategy_id: str,
+        req: EvolutionCycleConfigRequest,
+        principal: ActorPrincipal = Depends(require_min_role(Role.OPERATOR)),
+    ) -> EvolutionCycleStatusResponse:
+        """Configure (or update) the continuous evolution cycle for a strategy."""
+        with sf() as session:
+            store = StrategyVersionStore(session=session, sandbox=sandbox)
+            try:
+                store.get_strategy_meta(strategy_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+            now_ms = wall_clock.now_ms()
+            row = session.execute(
+                select(EvolutionCycleRecord).where(
+                    EvolutionCycleRecord.strategy_id == strategy_id
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = EvolutionCycleRecord(
+                    strategy_id=strategy_id,
+                    created_ms=now_ms,
+                )
+                session.add(row)
+            row.enabled = req.enabled
+            row.interval_days = req.interval_days
+            row.exchange = req.exchange
+            row.symbol = req.symbol
+            row.max_rounds = req.max_rounds
+            row.target_max_drawdown_pct = to_strict_decimal(
+                req.target_max_drawdown_pct, "target_max_drawdown_pct"
+            )
+            row.lookback_bars = req.lookback_bars
+            row.updated_ms = now_ms
+            append_audit_log(
+                session,
+                actor=principal.actor_id,
+                action="EVOLUTION_CYCLE_CONFIGURED",
+                resource_type="strategy",
+                resource_id=strategy_id,
+                payload={
+                    "enabled": req.enabled,
+                    "interval_days": req.interval_days,
+                    "symbol": req.symbol,
+                    "max_rounds": req.max_rounds,
+                },
+                ts_ms=now_ms,
+            )
+            session.commit()
+            return _serialize_evolution_cycle(row)
+
+    @app.get(
+        "/api/v1/strategies/{strategy_id}/evolution-cycle",
+        response_model=EvolutionCycleStatusResponse,
+    )
+    def get_evolution_cycle(
+        strategy_id: str,
+        _: ActorPrincipal = Depends(require_min_role(Role.VIEWER)),
+    ) -> EvolutionCycleStatusResponse:
+        with sf() as session:
+            row = session.execute(
+                select(EvolutionCycleRecord).where(
+                    EvolutionCycleRecord.strategy_id == strategy_id
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No evolution cycle configured for strategy {strategy_id}",
+                )
+            return _serialize_evolution_cycle(row)
 
     @app.get("/api/v1/strategies/{strategy_id}", response_model=StrategyDetailResponse)
     def get_strategy_detail(

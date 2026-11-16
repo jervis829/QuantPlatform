@@ -29,6 +29,7 @@ import {
 } from "../../../components/quant/state-views";
 import { StrategyCodeAndVersionPanel } from "../../../components/strategy/code-diff-viewer";
 import { CommitteeEvolutionPanel } from "../../../components/strategy/committee-evolution-panel";
+import { EvolutionCyclePanel } from "../../../components/strategy/evolution-cycle-panel";
 import {
   LiveThreeStepWizardModal,
   QuickBacktestModal,

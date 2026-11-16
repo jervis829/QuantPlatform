@@ -21,6 +21,10 @@ from quant_platform.nl_generator.research_committee import (
     RiskCritique,
     build_market_regime_profile,
 )
+from quant_platform.nl_generator.shadow_analysis import (
+    ShadowPerformanceAnalyzer,
+    ShadowPerformanceReport,
+)
 from quant_platform.nl_generator.spec_parser import NLStrategySpec, parse_nl_prompt_to_spec
 
 __all__ = [
@@ -39,6 +43,8 @@ __all__ = [
     "QuantCoderAgent",
     "RiskCriticAgent",
     "RiskCritique",
+    "ShadowPerformanceAnalyzer",
+    "ShadowPerformanceReport",
     "build_market_regime_profile",
     "parse_nl_prompt_to_spec",
 ]

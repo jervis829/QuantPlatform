@@ -128,6 +128,62 @@ export interface CommitteeRoundSummary {
   recommended_mutations?: Array<string>;
 }
 
+export interface EvolutionCycleConfigRequest {
+  enabled?: boolean;
+  interval_days?: number;
+  exchange?: string;
+  symbol?: string;
+  max_rounds?: number;
+  target_max_drawdown_pct?: string;
+  lookback_bars?: number;
+}
+
+export interface EvolutionCycleStatusResponse {
+  strategy_id: string;
+  enabled: boolean;
+  interval_days: number;
+  exchange: string;
+  symbol: string;
+  max_rounds: number;
+  target_max_drawdown_pct: string;
+  lookback_bars: number;
+  last_evolved_ms?: number | null;
+  last_shadow_run_id?: string | null;
+  last_champion_version_id?: string | null;
+  last_status: string;
+  last_error?: string | null;
+  next_evolution_due_ms?: number | null;
+  created_ms: number;
+  updated_ms: number;
+}
+
+export interface EvolveExistingRequest {
+  base_version_id?: string | null;
+  shadow_run_id?: string | null;
+  prompt?: string;
+  symbol?: string;
+  exchange?: string;
+  max_rounds?: number;
+  target_max_drawdown_pct?: string;
+  initial_usdt?: string;
+  leverage?: string;
+  lookback_bars?: number;
+}
+
+export interface EvolveExistingResponse {
+  strategy_id: string;
+  base_version_id: string;
+  champion_version: StrategyVersionResponse;
+  champion_round: number;
+  champion_run_id: string;
+  baseline_won: boolean;
+  llm_mode: string;
+  market_profile: CommitteeMarketProfile;
+  director_thesis: CommitteeDirectorThesis;
+  rounds: Array<CommitteeRoundSummary>;
+  shadow_report?: Record<string, unknown> | null;
+}
+
 export interface ExchangeConnectionItem {
   exchange: string;
   channel: string;
@@ -514,6 +570,38 @@ export interface SensitivityResponse {
   cells: Array<SensitivityCellItem>;
 }
 
+export interface ShadowAnalysisResponse {
+  run_id: string;
+  env: string;
+  strategy_id: string;
+  strategy_version_id: string;
+  symbol: string;
+  exchange: string;
+  status: string;
+  started_at_ms: number;
+  ended_at_ms?: number | null;
+  observation_days?: number;
+  fill_count?: number;
+  closed_trade_count?: number;
+  total_realized_pnl_usdt?: string;
+  total_fees_usdt?: string;
+  total_funding_usdt?: string;
+  fee_drag_ratio?: number;
+  win_rate?: number;
+  profit_factor?: number;
+  expectancy_usdt?: number;
+  avg_win_usdt?: number;
+  avg_loss_usdt?: number;
+  max_drawdown_pct?: number;
+  trades_per_day?: number;
+  avg_holding_hours?: number;
+  open_position_qty?: string;
+  diagnosis_tags?: Array<string>;
+  diagnosis_summary_zh?: string;
+  recommended_mutations?: Array<string>;
+  closed_trades?: Array<Record<string, unknown>>;
+}
+
 export interface StrategyApprovalRequest {
   note?: string;
 }
@@ -674,6 +762,7 @@ export type ApiEndpointPath =
   | "/api/v1/runs/backtest/{run_id}/walk-forward"
   | "/api/v1/runs/launch"
   | "/api/v1/runs/preflight"
+  | "/api/v1/runs/shadow/{run_id}/analysis"
   | "/api/v1/runs/{env}/{run_id}/cancel"
   | "/api/v1/runs/{env}/{run_id}/chart-data"
   | "/api/v1/runs/{env}/{run_id}/report"
@@ -687,6 +776,8 @@ export type ApiEndpointPath =
   | "/api/v1/strategies/versions/{version_id}/approve"
   | "/api/v1/strategies/versions/{version_id}/reject"
   | "/api/v1/strategies/{strategy_id}"
+  | "/api/v1/strategies/{strategy_id}/evolution-cycle"
+  | "/api/v1/strategies/{strategy_id}/evolve"
   | "/api/v1/strategies/{strategy_id}/params"
   | "/api/v1/system/diagnostics"
   | "/api/v1/system/maintenance"

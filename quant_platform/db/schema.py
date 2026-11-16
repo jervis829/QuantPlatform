@@ -435,6 +435,30 @@ class AuditLogRecord(Base):
     ts_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class EvolutionCycleRecord(Base):
+    """Continuous evolution loop configuration (shadow -> analyze -> evolve -> repeat)."""
+
+    __tablename__ = "evolution_cycles"
+
+    strategy_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    interval_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, default="binance")
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False, default="ETH/USDT:USDT")
+    max_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    target_max_drawdown_pct: Mapped[Decimal] = mapped_column(
+        StrictDecimalColumn(), nullable=False, default=Decimal("0.25")
+    )
+    lookback_bars: Mapped[int] = mapped_column(Integer, nullable=False, default=8760)
+    last_evolved_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_shadow_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_champion_version_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(32), nullable=False, default="IDLE")
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 @event.listens_for(AuditLogRecord, "before_update")
 def _forbid_audit_update(mapper: Any, connection: Any, target: Any) -> None:
     raise AuditImmutabilityError()

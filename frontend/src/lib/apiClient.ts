@@ -1,6 +1,10 @@
 import type {
   CommitteeEvolutionRequest,
   CommitteeEvolutionResponse,
+  EvolveExistingRequest,
+  EvolveExistingResponse,
+  EvolutionCycleConfigRequest,
+  EvolutionCycleStatusResponse,
   GlobalSearchResponse,
   HealthResponse,
   KillSwitchPreviewResponse,
@@ -24,6 +28,7 @@ import type {
   RunSummaryItem,
   SensitivityRequest,
   SensitivityResponse,
+  ShadowAnalysisResponse,
   StrategyApprovalRequest,
   StrategyDetailResponse,
   StrategyParamUpdateRequest,
@@ -161,6 +166,46 @@ export const quantApi = {
   evolveStrategyCommittee: (apiKey: string, body: CommitteeEvolutionRequest) =>
     requestJson<CommitteeEvolutionResponse>(
       "/api/v1/strategies/evolve-committee",
+      apiKey,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+
+  evolveExistingStrategy: (
+    apiKey: string,
+    strategyId: string,
+    body: EvolveExistingRequest
+  ) =>
+    requestJson<EvolveExistingResponse>(
+      `/api/v1/strategies/${encodeURIComponent(strategyId)}/evolve`,
+      apiKey,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+
+  getShadowAnalysis: (apiKey: string, runId: string) =>
+    requestJson<ShadowAnalysisResponse>(
+      `/api/v1/runs/shadow/${encodeURIComponent(runId)}/analysis`,
+      apiKey
+    ),
+
+  getEvolutionCycle: (apiKey: string, strategyId: string) =>
+    requestJson<EvolutionCycleStatusResponse>(
+      `/api/v1/strategies/${encodeURIComponent(strategyId)}/evolution-cycle`,
+      apiKey
+    ),
+
+  configureEvolutionCycle: (
+    apiKey: string,
+    strategyId: string,
+    body: EvolutionCycleConfigRequest
+  ) =>
+    requestJson<EvolutionCycleStatusResponse>(
+      `/api/v1/strategies/${encodeURIComponent(strategyId)}/evolution-cycle`,
       apiKey,
       {
         method: "POST",

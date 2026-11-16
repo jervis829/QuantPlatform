@@ -122,6 +122,94 @@ class CommitteeEvolutionResponse(BaseModel):
     rounds: list[CommitteeRoundSummary]
 
 
+class EvolveExistingRequest(BaseModel):
+    base_version_id: str | None = None
+    shadow_run_id: str | None = None
+    prompt: str = ""
+    symbol: str = "ETH/USDT:USDT"
+    exchange: str = "binance"
+    max_rounds: int = Field(default=2, ge=1, le=4)
+    target_max_drawdown_pct: str = "0.25"
+    initial_usdt: str = "10000"
+    leverage: str = "2"
+    lookback_bars: int = Field(default=8760, ge=60, le=30000)
+
+
+class EvolveExistingResponse(BaseModel):
+    strategy_id: str
+    base_version_id: str
+    champion_version: StrategyVersionResponse
+    champion_round: int
+    champion_run_id: str
+    baseline_won: bool
+    llm_mode: str
+    market_profile: CommitteeMarketProfile
+    director_thesis: CommitteeDirectorThesis
+    rounds: list[CommitteeRoundSummary]
+    shadow_report: dict[str, Any] | None = None
+
+
+class ShadowAnalysisResponse(BaseModel):
+    run_id: str
+    env: str
+    strategy_id: str
+    strategy_version_id: str
+    symbol: str
+    exchange: str
+    status: str
+    started_at_ms: int
+    ended_at_ms: int | None = None
+    observation_days: float = 0.0
+    fill_count: int = 0
+    closed_trade_count: int = 0
+    total_realized_pnl_usdt: str = "0"
+    total_fees_usdt: str = "0"
+    total_funding_usdt: str = "0"
+    fee_drag_ratio: float = 0.0
+    win_rate: float = 0.0
+    profit_factor: float = 0.0
+    expectancy_usdt: float = 0.0
+    avg_win_usdt: float = 0.0
+    avg_loss_usdt: float = 0.0
+    max_drawdown_pct: float = 0.0
+    trades_per_day: float = 0.0
+    avg_holding_hours: float = 0.0
+    open_position_qty: str = "0"
+    diagnosis_tags: list[str] = Field(default_factory=list)
+    diagnosis_summary_zh: str = ""
+    recommended_mutations: list[str] = Field(default_factory=list)
+    closed_trades: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EvolutionCycleConfigRequest(BaseModel):
+    enabled: bool = True
+    interval_days: int = Field(default=3, ge=1, le=30)
+    exchange: str = "binance"
+    symbol: str = "ETH/USDT:USDT"
+    max_rounds: int = Field(default=2, ge=1, le=4)
+    target_max_drawdown_pct: str = "0.25"
+    lookback_bars: int = Field(default=8760, ge=60, le=30000)
+
+
+class EvolutionCycleStatusResponse(BaseModel):
+    strategy_id: str
+    enabled: bool
+    interval_days: int
+    exchange: str
+    symbol: str
+    max_rounds: int
+    target_max_drawdown_pct: str
+    lookback_bars: int
+    last_evolved_ms: int | None = None
+    last_shadow_run_id: str | None = None
+    last_champion_version_id: str | None = None
+    last_status: str
+    last_error: str | None = None
+    next_evolution_due_ms: int | None = None
+    created_ms: int
+    updated_ms: int
+
+
 class StrategyParamUpdateRequest(BaseModel):
     params: dict[str, Any]
 

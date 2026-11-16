@@ -1036,6 +1036,7 @@ class RiskCriticAgent:
         report: dict[str, Any],
         target_max_drawdown_pct: float,
         already_applied: list[str],
+        shadow_diagnosis: dict[str, Any] | None = None,
     ) -> RiskCritique:
         sm = report.get("summary_metrics", {})
         tm = report.get("trade_metrics", {})
@@ -1069,6 +1070,22 @@ class RiskCriticAgent:
 
         findings: list[str] = []
         mutations: list[str] = []
+
+        # Shadow-trading diagnosis takes priority: real fills beat historical simulation.
+        if shadow_diagnosis:
+            shadow_tags = shadow_diagnosis.get("diagnosis_tags") or []
+            shadow_summary = shadow_diagnosis.get("diagnosis_summary_zh") or ""
+            shadow_mutations = shadow_diagnosis.get("recommended_mutations") or []
+            if shadow_summary:
+                findings.append(f"[模拟盘实证] {shadow_summary}")
+            for mut in shadow_mutations:
+                if mut not in already_applied and mut not in mutations:
+                    mutations.append(mut)
+            if "HEALTHY" not in shadow_tags and shadow_tags:
+                findings.append(
+                    f"模拟盘诊断标签 {', '.join(shadow_tags)} 已转化为本轮优先结构改造："
+                    f"{', '.join(shadow_mutations) if shadow_mutations else '无'}。"
+                )
 
         if trades == 0:
             findings.append("当前参数条件下未触发完整闭环交易，需适度放宽信号灵敏度或检查过滤门槛。")
@@ -1250,47 +1267,18 @@ class AutoResearchCommittee:
             )
             assert ver_rec.approval_status == ApprovalStatus.PENDING.value
 
-            # Execute authentic historical BacktestEngine + full report persistence
-            bt_clock = SimulatedClock(bars[0].open_time_ms if bars else self.clock.now_ms())
-            bt_feed = HistoricalDataFeed(clock=bt_clock)
-            bt_feed.register_symbol_spec(spec)
-            if bars:
-                bt_feed.load_bars(spec.exchange, spec.symbol, bars[0].interval, bars)
-            if fundings:
-                bt_feed.load_funding_rates(spec.exchange, spec.symbol, fundings)
-
-            strat_cfg = StrategyConfig(
+            report, critique, bt_res = self._backtest_and_critique(
                 strategy_id=strategy_id,
-                strategy_version_id=ver_rec.version_id,
+                version_id=ver_rec.version_id,
                 name=name,
-                exchanges=[spec.exchange],
-                symbols=[spec.symbol],
-                bar_interval=bars[0].interval if bars else "1h",
-                params=validated_params,
-                margin_mode=MarginMode.CROSS,
-                default_leverage=leverage,
-                initial_balances={spec.margin_asset: initial_usdt},
-            )
-            bt_engine = BacktestEngine(
-                db_session=self.session,
-                clock=bt_clock,
-                data_feed=bt_feed,
-                strategy_cls=cls,
-                strategy_code=code,
-                config=strat_cfg,
-            )
-            bt_res = bt_engine.run()
-            assert bt_res.run_record.status == RunStatus.COMPLETED
-
-            report = build_and_persist_backtest_report(
-                db_session=self.session,
-                result=bt_res,
-                benchmark_bars=bars,
-                periods_per_year=periods_per_year_for_interval(bars[0].interval if bars else "1h"),
-            )
-
-            critique = self.critic.audit_backtest_report(
-                report=report,
+                code=code,
+                cls=cls,
+                validated_params=validated_params,
+                bars=bars,
+                spec=spec,
+                fundings=fundings,
+                initial_usdt=initial_usdt,
+                leverage=leverage,
                 target_max_drawdown_pct=float(target_max_drawdown_pct),
                 already_applied=active_mutations,
             )
@@ -1401,4 +1389,400 @@ class AutoResearchCommittee:
             "market_profile": profile,
             "director_thesis": thesis,
             "rounds": round_records,
+        }
+
+    # ------------------------------------------------------------------
+    # Shared backtest execution helper
+    # ------------------------------------------------------------------
+    def _backtest_and_critique(
+        self,
+        *,
+        strategy_id: str,
+        version_id: str,
+        name: str,
+        code: str,
+        cls: Any,
+        validated_params: dict[str, Any],
+        bars: list[Bar],
+        spec: SymbolSpec,
+        fundings: list[FundingRatePoint] | None,
+        initial_usdt: StrictDecimal,
+        leverage: StrictDecimal,
+        target_max_drawdown_pct: float,
+        already_applied: list[str],
+        shadow_diagnosis: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], RiskCritique, Any]:
+        """Execute authentic BacktestEngine + persist report + Risk Critic audit."""
+        bt_clock = SimulatedClock(bars[0].open_time_ms if bars else self.clock.now_ms())
+        bt_feed = HistoricalDataFeed(clock=bt_clock)
+        bt_feed.register_symbol_spec(spec)
+        if bars:
+            bt_feed.load_bars(spec.exchange, spec.symbol, bars[0].interval, bars)
+        if fundings:
+            bt_feed.load_funding_rates(spec.exchange, spec.symbol, fundings)
+
+        strat_cfg = StrategyConfig(
+            strategy_id=strategy_id,
+            strategy_version_id=version_id,
+            name=name,
+            exchanges=[spec.exchange],
+            symbols=[spec.symbol],
+            bar_interval=bars[0].interval if bars else "1h",
+            params=validated_params,
+            margin_mode=MarginMode.CROSS,
+            default_leverage=leverage,
+            initial_balances={spec.margin_asset: initial_usdt},
+        )
+        bt_engine = BacktestEngine(
+            db_session=self.session,
+            clock=bt_clock,
+            data_feed=bt_feed,
+            strategy_cls=cls,
+            strategy_code=code,
+            config=strat_cfg,
+        )
+        bt_res = bt_engine.run()
+        assert bt_res.run_record.status == RunStatus.COMPLETED
+
+        report = build_and_persist_backtest_report(
+            db_session=self.session,
+            result=bt_res,
+            benchmark_bars=bars,
+            periods_per_year=periods_per_year_for_interval(bars[0].interval if bars else "1h"),
+        )
+
+        critique = self.critic.audit_backtest_report(
+            report=report,
+            target_max_drawdown_pct=target_max_drawdown_pct,
+            already_applied=already_applied,
+            shadow_diagnosis=shadow_diagnosis,
+        )
+        return report, critique, bt_res
+
+    def _build_round_record(
+        self,
+        *,
+        round_index: int,
+        ver_rec: StrategyVersionRecord,
+        report: dict[str, Any],
+        critique: RiskCritique,
+        mutation_tags: list[str],
+        coder_summary: str,
+        bt_res: Any,
+    ) -> CommitteeRoundRecord:
+        sm = report.get("summary_metrics", {})
+        tm = report.get("trade_metrics", {})
+        cb = report.get("cost_breakdown", {})
+        return CommitteeRoundRecord(
+            round_index=round_index,
+            version_id=ver_rec.version_id,
+            version=ver_rec.version,
+            run_id=bt_res.run_record.run_id,
+            mutation_tags=mutation_tags if mutation_tags else ["BASELINE_THESIS"],
+            coder_summary=coder_summary,
+            cumulative_return=float(sm.get("cumulative_return", 0.0) or 0.0),
+            annualized_return=float(sm.get("annualized_return", 0.0) or 0.0),
+            max_drawdown=float(sm.get("max_drawdown", 0.0) or 0.0),
+            sharpe=float(sm.get("sharpe", 0.0) or 0.0),
+            sortino=float(sm.get("sortino", 0.0) or 0.0),
+            win_rate=float(tm.get("win_rate", 0.0) or 0.0),
+            payoff_ratio=float(tm.get("payoff_ratio", 0.0) or 0.0),
+            closed_trade_count=int(tm.get("closed_trade_count", 0) or 0),
+            turnover_rate=float(sm.get("turnover_rate", 0.0) or 0.0),
+            total_fees_usdt=str(cb.get("total_fees", "0")),
+            total_funding_usdt=str(cb.get("total_funding", "0")),
+            composite_score=critique.composite_score,
+            critic_verdict=critique.verdict,
+            critic_findings=critique.findings,
+            recommended_mutations=critique.recommended_mutations,
+        )
+
+    # ------------------------------------------------------------------
+    # Evolve an EXISTING strategy (continuous evolution loop)
+    # ------------------------------------------------------------------
+    def evolve_existing_strategy(
+        self,
+        *,
+        strategy_id: str,
+        base_version_id: str | None = None,
+        prompt: str = "",
+        author: str,
+        bars: list[Bar],
+        spec: SymbolSpec,
+        fundings: list[FundingRatePoint] | None = None,
+        max_rounds: int = 2,
+        target_max_drawdown_pct: StrictDecimal = Decimal("0.25"),
+        initial_usdt: StrictDecimal = Decimal("10000"),
+        leverage: StrictDecimal = Decimal("2"),
+        shadow_report: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Evolve an existing strategy version through the committee loop.
+
+        Round 0 backtests the existing base version as-is (immutable baseline).
+        Rounds 1..N synthesize structural variants via QuantCoderAgent.
+        If shadow_report is provided (from ShadowPerformanceAnalyzer), its
+        diagnosis takes priority in prescribing Round 1 mutations.
+
+        The champion is chosen across ALL rounds including the baseline, so
+        evolution never degrades the strategy: if no variant beats the base,
+        the base version remains champion and no new head version is created.
+        All newly created versions stay ApprovalStatus.PENDING.
+        """
+        rounds_cap = max(1, min(4, int(max_rounds)))
+
+        # Resolve base version (default: latest head)
+        if base_version_id:
+            base_ver = self.version_store.get_version(base_version_id)
+        else:
+            versions = self.version_store.list_versions(strategy_id)
+            if not versions:
+                raise KeyError(f"Strategy {strategy_id} has no versions to evolve")
+            base_ver = versions[-1]
+        meta = self.version_store.get_strategy_meta(strategy_id)
+        name = meta.name
+        base_code = base_ver.code
+        base_params = dict(base_ver.params_json or {})
+
+        profile = build_market_regime_profile(bars, exchange=spec.exchange, symbol=spec.symbol)
+
+        # Reconstruct thesis: prefer stored committee thesis, else Director formulates fresh
+        stored_thesis = None
+        gate = base_ver.backtest_gate_json or {}
+        if isinstance(gate, dict) and gate.get("director_thesis"):
+            try:
+                stored_thesis = DirectorThesis(**gate["director_thesis"])
+            except Exception:
+                stored_thesis = None
+        if stored_thesis is not None:
+            thesis = stored_thesis
+        else:
+            thesis = self.director.formulate_thesis(
+                prompt=prompt or "继续优化已有策略，控制回撤并提升风险调整收益",
+                profile=profile,
+                bars=bars,
+                spec=spec,
+                initial_usdt=initial_usdt,
+            )
+
+        # ---- Round 0: immutable baseline backtest of existing version ----
+        base_cls = compile_strategy_class(base_code, checker=self._checker)
+        _, base_validated = extract_param_schema_and_defaults(base_cls, base_params)
+        base_report, base_critique, base_bt_res = self._backtest_and_critique(
+            strategy_id=strategy_id,
+            version_id=base_ver.version_id,
+            name=name,
+            code=base_code,
+            cls=base_cls,
+            validated_params=base_validated,
+            bars=bars,
+            spec=spec,
+            fundings=fundings,
+            initial_usdt=initial_usdt,
+            leverage=leverage,
+            target_max_drawdown_pct=float(target_max_drawdown_pct),
+            already_applied=[],
+            shadow_diagnosis=shadow_report,
+        )
+        base_round = self._build_round_record(
+            round_index=0,
+            ver_rec=base_ver,
+            report=base_report,
+            critique=base_critique,
+            mutation_tags=["EXISTING_BASELINE"],
+            coder_summary=f"已有版本 {base_ver.version_id} 原样回测基线（不修改代码）",
+            bt_res=base_bt_res,
+        )
+
+        round_records: list[CommitteeRoundRecord] = [base_round]
+        round_artifacts: list[dict[str, Any]] = [
+            {
+                "round": base_round,
+                "version_record": base_ver,
+                "code": base_code,
+                "params": base_validated,
+                "is_baseline": True,
+            }
+        ]
+
+        # Seed active mutations from shadow diagnosis (priority) + baseline critique
+        active_mutations: list[str] = []
+        if shadow_report:
+            for mut in shadow_report.get("recommended_mutations") or []:
+                if mut not in active_mutations:
+                    active_mutations.append(mut)
+        for mut in base_critique.recommended_mutations:
+            if mut not in active_mutations:
+                active_mutations.append(mut)
+
+        prev_code = base_code
+        prev_critique = base_critique
+        any_external_llm = False
+
+        # ---- Rounds 1..N: structural variants ----
+        for r_idx in range(1, rounds_cap + 1):
+            code = ""
+            coder_summary = ""
+            cls = None
+            validated_params: dict[str, Any] = {}
+            repair_err: str | None = None
+
+            for _attempt in range(2):
+                code, coder_summary, used_ext = self.coder.synthesize_round_code(
+                    thesis=thesis,
+                    round_index=r_idx,
+                    active_mutations=list(active_mutations),
+                    bar_count=len(bars),
+                    previous_code=prev_code,
+                    previous_critique=prev_critique,
+                    repair_error=repair_err,
+                )
+                any_external_llm = any_external_llm or used_ext
+                try:
+                    self._checker.assert_safe(code)
+                    cls = compile_strategy_class(code, checker=self._checker)
+                    _, validated_params = extract_param_schema_and_defaults(cls, None)
+                    self.version_store.sandbox.execute_isolated(
+                        code,
+                        {"action": "smoke_test", "params": validated_params},
+                    )
+                    repair_err = None
+                    break
+                except Exception as exc:
+                    repair_err = f"{type(exc).__name__}: {exc}"
+
+            if repair_err is not None or cls is None:
+                raise RuntimeError(f"Evolution round {r_idx} failed validation: {repair_err}")
+
+            ver_rec = self.version_store.submit_strategy_code(
+                strategy_id=strategy_id,
+                name=name,
+                code=code,
+                author=author,
+                ts_ms=self.clock.now_ms() + r_idx,
+                description=f"持续进化闭环 Round {r_idx}（基线 {base_ver.version_id}）",
+                params=validated_params,
+                source_type=StrategySourceType.NL_GENERATED,
+                generation_prompt=(
+                    f"[Evolution Round {r_idx}/{rounds_cap} from {base_ver.version_id}] "
+                    f"{prompt or 'shadow-informed structural evolution'}"
+                ),
+                backtest_gate_report={"committee_round": r_idx, "status": "EVALUATING"},
+            )
+            assert ver_rec.approval_status == ApprovalStatus.PENDING.value
+
+            report, critique, bt_res = self._backtest_and_critique(
+                strategy_id=strategy_id,
+                version_id=ver_rec.version_id,
+                name=name,
+                code=code,
+                cls=cls,
+                validated_params=validated_params,
+                bars=bars,
+                spec=spec,
+                fundings=fundings,
+                initial_usdt=initial_usdt,
+                leverage=leverage,
+                target_max_drawdown_pct=float(target_max_drawdown_pct),
+                already_applied=active_mutations,
+            )
+
+            r_record = self._build_round_record(
+                round_index=r_idx,
+                ver_rec=ver_rec,
+                report=report,
+                critique=critique,
+                mutation_tags=list(active_mutations) if active_mutations else ["BASELINE_THESIS"],
+                coder_summary=coder_summary,
+                bt_res=bt_res,
+            )
+            round_records.append(r_record)
+            round_artifacts.append(
+                {
+                    "round": r_record,
+                    "version_record": ver_rec,
+                    "code": code,
+                    "params": validated_params,
+                    "is_baseline": False,
+                }
+            )
+
+            prev_code = code
+            prev_critique = critique
+            for mut in critique.recommended_mutations:
+                if mut not in active_mutations:
+                    active_mutations.append(mut)
+
+        # ---- Champion selection across ALL rounds including baseline ----
+        best_item = max(round_artifacts, key=lambda item: item["round"].composite_score)
+        best_round: CommitteeRoundRecord = best_item["round"]
+        champion_ver: StrategyVersionRecord = best_item["version_record"]
+        baseline_won = bool(best_item.get("is_baseline"))
+
+        # If a variant won but is not the head, promote it to head version
+        if not baseline_won and champion_ver.version_id != round_artifacts[-1]["version_record"].version_id:
+            champion_ver = self.version_store.submit_strategy_code(
+                strategy_id=strategy_id,
+                name=name,
+                code=best_item["code"],
+                author=author,
+                ts_ms=self.clock.now_ms() + rounds_cap + 2,
+                description=f"持续进化闭环胜出版本（基线 {base_ver.version_id}）",
+                params=best_item["params"],
+                source_type=StrategySourceType.NL_GENERATED,
+                generation_prompt=f"[Champion Promoted from Evolution Round {best_round.round_index}] {prompt}",
+                backtest_gate_report={"status": "PROMOTED_CHAMPION"},
+            )
+
+        llm_mode = "openai_compatible_hybrid" if any_external_llm else "deterministic_specialist"
+        evolution_summary_payload = {
+            "passed": best_round.critic_verdict != "HIGH_RISK_WARNING",
+            "mode": "multi_agent_committee_evolution",
+            "llm_mode": llm_mode,
+            "base_version_id": base_ver.version_id,
+            "baseline_won": baseline_won,
+            "champion_round": best_round.round_index,
+            "run_id": best_round.run_id,
+            "total_trades": best_round.closed_trade_count,
+            "cumulative_return_pct": f"{best_round.cumulative_return * 100:+.2f}%",
+            "max_drawdown_pct": f"{abs(best_round.max_drawdown) * 100:.2f}%",
+            "sharpe": round(best_round.sharpe, 3),
+            "composite_score": best_round.composite_score,
+            "market_profile": profile.model_dump(mode="json"),
+            "director_thesis": thesis.model_dump(mode="json"),
+            "shadow_report": shadow_report,
+            "rounds": [r.model_dump(mode="json") for r in round_records],
+        }
+
+        for item in round_artifacts:
+            if item.get("is_baseline"):
+                continue
+            v_obj: StrategyVersionRecord = item["version_record"]
+            r_obj: CommitteeRoundRecord = item["round"]
+            v_obj.backtest_gate_json = {
+                **evolution_summary_payload,
+                "this_round_index": r_obj.round_index,
+                "run_id": r_obj.run_id,
+                "total_trades": r_obj.closed_trade_count,
+                "cumulative_return_pct": f"{r_obj.cumulative_return * 100:+.2f}%",
+                "max_drawdown_pct": f"{abs(r_obj.max_drawdown) * 100:.2f}%",
+                "sharpe": round(r_obj.sharpe, 3),
+                "composite_score": r_obj.composite_score,
+            }
+        if not baseline_won:
+            champion_ver.backtest_gate_json = evolution_summary_payload
+        self.session.flush()
+
+        return {
+            "strategy_id": strategy_id,
+            "base_version_id": base_ver.version_id,
+            "champion_version": champion_ver,
+            "champion_round": best_round.round_index,
+            "champion_run_id": best_round.run_id,
+            "baseline_won": baseline_won,
+            "llm_mode": llm_mode,
+            "market_profile": profile,
+            "director_thesis": thesis,
+            "rounds": round_records,
+            "shadow_report": shadow_report,
         }

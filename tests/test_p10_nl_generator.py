@@ -374,3 +374,150 @@ def test_evolve_committee_api_endpoint_and_audit_trail(tmp_path: Path) -> None:
         assert rep_resp.status_code == 200
         assert "summary_metrics" in rep_resp.json()
 
+
+def test_continuous_evolution_loop_shadow_analyze_and_evolve_existing(tmp_path: Path) -> None:
+    """
+    Continuous Evolution Loop (shadow -> analyze -> evolve -> repeat):
+    1. Evolve a new strategy via committee, approve champion, launch shadow run.
+    2. GET /api/v1/runs/shadow/{run_id}/analysis returns structured diagnosis.
+    3. POST /api/v1/strategies/{id}/evolve with shadow_run_id evolves existing
+       strategy: Round 0 = immutable baseline, new versions stay PENDING,
+       champion never degrades below baseline.
+    4. Evolution cycle config/status endpoints persist and serialize correctly.
+    """
+    from fastapi.testclient import TestClient
+    from quant_platform.api import create_app
+
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'p10_evo_loop.db'}")
+    client = TestClient(app)
+    researcher_hdr = {"X-API-Key": "researcher-dev-token"}
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+    viewer_hdr = {"X-API-Key": "viewer-dev-token"}
+
+    # Step 1: committee-evolve a fresh strategy
+    evo_resp = client.post(
+        "/api/v1/strategies/evolve-committee",
+        headers=researcher_hdr,
+        json={
+            "strategy_id": "strat_loop_demo",
+            "name": "Loop Demo Strategy",
+            "prompt": "BTC/USDT:USDT 双指数均线 EMA 趋势策略，控制回撤",
+            "symbol": "BTC/USDT:USDT",
+            "exchange": "binance",
+            "max_rounds": 2,
+            "target_max_drawdown_pct": "0.25",
+            "lookback_bars": 240,
+        },
+    )
+    assert evo_resp.status_code == 200, evo_resp.text
+    champ_vid = evo_resp.json()["champion_version"]["version_id"]
+
+    # Approve champion (ADMIN) and launch shadow run
+    appr = client.post(
+        f"/api/v1/strategies/versions/{champ_vid}/approve",
+        headers=admin_hdr,
+        json={"note": "approved for shadow loop test"},
+    )
+    assert appr.status_code == 200, appr.text
+
+    sh_resp = client.post(
+        "/api/v1/runs/launch",
+        headers=researcher_hdr,
+        json={
+            "strategy_id": "strat_loop_demo",
+            "version_id": champ_vid,
+            "env": "shadow",
+            "exchange": "binance",
+            "symbol": "BTC/USDT:USDT",
+            "initial_usdt": "10000",
+            "async_mode": False,
+        },
+    )
+    assert sh_resp.status_code == 200, sh_resp.text
+    shadow_run_id = sh_resp.json()["run_id"]
+
+    # Step 2: shadow performance analysis
+    ana_resp = client.get(
+        f"/api/v1/runs/shadow/{shadow_run_id}/analysis", headers=viewer_hdr
+    )
+    assert ana_resp.status_code == 200, ana_resp.text
+    ana = ana_resp.json()
+    assert ana["run_id"] == shadow_run_id
+    assert ana["env"] == "shadow"
+    assert ana["strategy_id"] == "strat_loop_demo"
+    assert isinstance(ana["diagnosis_tags"], list) and len(ana["diagnosis_tags"]) >= 1
+    assert isinstance(ana["diagnosis_summary_zh"], str)
+    assert isinstance(ana["closed_trades"], list)
+    assert ana["fill_count"] >= 0
+
+    # Step 3: evolve existing strategy informed by shadow diagnosis
+    evolve_resp = client.post(
+        "/api/v1/strategies/strat_loop_demo/evolve",
+        headers=researcher_hdr,
+        json={
+            "base_version_id": champ_vid,
+            "shadow_run_id": shadow_run_id,
+            "prompt": "基于模拟盘实证继续优化",
+            "symbol": "BTC/USDT:USDT",
+            "exchange": "binance",
+            "max_rounds": 2,
+            "target_max_drawdown_pct": "0.25",
+            "lookback_bars": 240,
+        },
+    )
+    assert evolve_resp.status_code == 200, evolve_resp.text
+    evo_body = evolve_resp.json()
+    assert evo_body["strategy_id"] == "strat_loop_demo"
+    assert evo_body["base_version_id"] == champ_vid
+    # Round 0 is the immutable baseline; rounds 1..2 are variants
+    assert len(evo_body["rounds"]) == 3
+    assert evo_body["rounds"][0]["round_index"] == 0
+    assert evo_body["rounds"][0]["mutation_tags"] == ["EXISTING_BASELINE"]
+    assert evo_body["rounds"][0]["version_id"] == champ_vid
+    # Shadow report is echoed back for auditability
+    assert evo_body["shadow_report"] is not None
+    assert evo_body["shadow_report"]["run_id"] == shadow_run_id
+    # Champion never degrades below baseline score
+    scores = [r["composite_score"] for r in evo_body["rounds"]]
+    champ_score = evo_body["champion_version"]["backtest_gate"]["composite_score"]
+    assert champ_score == max(scores)
+    # All newly created versions remain PENDING (Red Line 7)
+    detail = client.get("/api/v1/strategies/strat_loop_demo", headers=viewer_hdr).json()
+    new_versions = [v for v in detail["versions"] if v["version_id"] != champ_vid]
+    assert len(new_versions) >= 1
+    assert all(v["approval_status"] == "PENDING" for v in new_versions)
+
+    # Step 4: evolution cycle config + status
+    cfg_resp = client.post(
+        "/api/v1/strategies/strat_loop_demo/evolution-cycle",
+        headers=admin_hdr,
+        json={
+            "enabled": True,
+            "interval_days": 3,
+            "exchange": "binance",
+            "symbol": "BTC/USDT:USDT",
+            "max_rounds": 2,
+            "target_max_drawdown_pct": "0.25",
+            "lookback_bars": 240,
+        },
+    )
+    assert cfg_resp.status_code == 200, cfg_resp.text
+    cfg = cfg_resp.json()
+    assert cfg["strategy_id"] == "strat_loop_demo"
+    assert cfg["enabled"] is True
+    assert cfg["interval_days"] == 3
+    assert cfg["last_status"] == "IDLE"
+
+    status_resp = client.get(
+        "/api/v1/strategies/strat_loop_demo/evolution-cycle", headers=viewer_hdr
+    )
+    assert status_resp.status_code == 200
+    assert status_resp.json()["strategy_id"] == "strat_loop_demo"
+
+    # Audit trail records the evolution + cycle configuration
+    audit_resp = client.get("/api/v1/audit-logs?limit=50", headers=admin_hdr)
+    assert audit_resp.status_code == 200
+    actions = {item["action"] for item in audit_resp.json()["items"]}
+    assert "STRATEGY_EVOLVED_EXISTING" in actions
+    assert "EVOLUTION_CYCLE_CONFIGURED" in actions
+
