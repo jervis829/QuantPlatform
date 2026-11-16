@@ -375,6 +375,91 @@ def _serialize_evolution_cycle(row: EvolutionCycleRecord) -> EvolutionCycleStatu
     )
 
 
+def _run_shadow_replay_sync(
+    *,
+    session: Any,
+    sandbox: Any,
+    strategy_id: str,
+    version_id: str,
+    exchange: str,
+    symbol: str,
+    initial_usdt: Any,
+) -> str:
+    """Run a shadow (paper) replay for an APPROVED version; returns the new run_id.
+
+    Shared by the /runs/launch endpoint path and the evolution-cycle scheduler
+    (auto-launch after operator approval). Shadow is paper-only: no real funds.
+    """
+    import uuid as _uuid
+
+    store = StrategyVersionStore(session=session, sandbox=sandbox)
+    ver = store.get_version(version_id)
+    meta = store.get_strategy_meta(strategy_id)
+    if ver.approval_status != ApprovalStatus.APPROVED.value:
+        raise ValueError(f"APPROVAL_REQUIRED: Version {version_id} status is {ver.approval_status}")
+
+    cls = compile_strategy_class(ver.code)
+    bars, _fundings = _resolve_dataset_for_strategy(exchange, symbol, strategy_id)
+    spec = _default_perp_spec(symbol, exchange)
+    cfg = StrategyConfig(
+        strategy_id=strategy_id,
+        strategy_version_id=ver.version_id,
+        name=meta.name,
+        exchanges=[exchange],
+        symbols=[symbol],
+        bar_interval=bars[0].interval if bars else "1h",
+        params=ver.params_json,
+        margin_mode=MarginMode.CROSS,
+        default_leverage=Decimal("2"),
+        initial_balances={"USDT": initial_usdt},
+    )
+    ledger = UnifiedLedgerRepository(session)
+    sh_clock = SimulatedClock(bars[0].open_time_ms if bars else 0)
+    sh_feed = StreamingDataFeed(clock=sh_clock)
+    sh_feed.register_symbol_spec(spec)
+    run_id = f"run_sh_{_uuid.uuid4().hex[:14]}"
+    sh_broker = ShadowBroker(
+        run_id=run_id,
+        strategy_id=strategy_id,
+        clock=sh_clock,
+        data_feed=sh_feed,
+        ledger=ledger,
+        sim_params=ShadowSimulationParams(latency_ms=10),
+        initial_balances={"USDT": initial_usdt},
+    )
+
+    def _sh_events():
+        for b in bars:
+            sh_clock.advance_to(b.close_time_ms)
+            sh_feed.on_bar(b)
+            sh_broker.on_bar(b)
+            yield ("bar", b)
+
+    runner = ShadowRunner(
+        run_id=run_id,
+        strategy_cls=cls,
+        strategy_code=ver.code,
+        config=cfg,
+        clock=sh_clock,
+        data_feed=sh_feed,
+        broker=sh_broker,
+        ledger=ledger,
+        event_source=_sh_events,
+    )
+    run_rec = runner.run()
+    append_audit_log(
+        session,
+        actor="evolution_cycle_scheduler",
+        action="SHADOW_RUN_AUTO_LAUNCHED",
+        resource_type="run",
+        resource_id=run_rec.run_id,
+        payload={"env": "shadow", "version_id": version_id, "symbol": symbol},
+        ts_ms=sh_clock.now_ms(),
+    )
+    session.commit()
+    return run_rec.run_id
+
+
 _SEV_ORDER_WEIGHT = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
 
 
@@ -509,6 +594,50 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                     )
                 for cycle in due_cycles:
                     try:
+                        # --- Auto-launch shadow for newly APPROVED versions ---
+                        # Operator approval stays mandatory (Red Line 7); once
+                        # approved, the paper shadow run starts automatically so
+                        # the loop needs no further manual steps.
+                        try:
+                            with sf() as launch_session:
+                                store = StrategyVersionStore(session=launch_session, sandbox=sandbox)
+                                try:
+                                    latest_ver = store.get_latest_version(cycle.strategy_id)
+                                except KeyError:
+                                    latest_ver = None
+                                if (
+                                    latest_ver is not None
+                                    and latest_ver.approval_status == ApprovalStatus.APPROVED.value
+                                ):
+                                    existing_shadow = launch_session.execute(
+                                        select(RunOrmRecord)
+                                        .where(
+                                            RunOrmRecord.strategy_id == cycle.strategy_id,
+                                            RunOrmRecord.env == "shadow",
+                                            RunOrmRecord.strategy_version_id == latest_ver.version_id,
+                                        )
+                                        .limit(1)
+                                    ).scalar_one_or_none()
+                                    if existing_shadow is None:
+                                        _run_shadow_replay_sync(
+                                            session=launch_session,
+                                            sandbox=sandbox,
+                                            strategy_id=cycle.strategy_id,
+                                            version_id=latest_ver.version_id,
+                                            exchange=cycle.exchange,
+                                            symbol=cycle.symbol,
+                                            initial_usdt=Decimal("10000"),
+                                        )
+                                        ws_hub.publish_sync(
+                                            {
+                                                "type": "shadow_run_auto_launched",
+                                                "strategy_id": cycle.strategy_id,
+                                                "version_id": latest_ver.version_id,
+                                            }
+                                        )
+                        except Exception:
+                            pass
+
                         interval_ms = int(cycle.interval_days) * 86_400_000
                         if (
                             cycle.last_evolved_ms is not None
