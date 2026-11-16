@@ -610,7 +610,7 @@ class QuantCoderAgent:
         if cooldown_bars > 0:
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", description="在 1H K 线上回看 N 小时算均线；≈ 4H EMA({macro_win // 4}) / 日线 EMA({macro_win // 24})", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
             extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:
@@ -778,7 +778,7 @@ class CommitteeBreakoutStrategy(Strategy):
         if cooldown_bars > 0:
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", description="在 1H K 线上回看 N 小时算均线；≈ 4H EMA({macro_win // 4}) / 日线 EMA({macro_win // 24})", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
             extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:
@@ -946,7 +946,7 @@ class CommitteeTrendStrategy(Strategy):
         if cooldown_bars > 0:
             extra_params += f'    cooldown_bars: int = ui_param({cooldown_bars}, ge=0, le=96, title="T2 平仓冷却周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_macro:
-            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", ui_group="signal", unit="小时", danger_level="safe")\n'
+            extra_params += f'    macro_ema_window: int = ui_param({macro_win}, ge=20, le=400, title="T1 趋势周期（宏观均线）", description="在 1H K 线上回看 N 小时算均线；≈ 4H EMA({macro_win // 4}) / 日线 EMA({macro_win // 24})", ui_group="signal", unit="小时", danger_level="safe")\n'
         if entry_refine:
             extra_params += f'    entry_confirm_bars: int = ui_param({entry_confirm}, ge=2, le=30, title="T3 入场确认周期", ui_group="signal", unit="小时", danger_level="safe")\n'
         if use_stop_trail:

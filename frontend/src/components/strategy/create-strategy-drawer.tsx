@@ -400,7 +400,7 @@ export function CreateStrategyModal({
                   </div>
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  时间框架：T1 趋势周期定方向（默认 180 小时）+ T2 信号周期找机会（总监自动立意）；开启 T3 后，信号需连续成立 N 小时才入场，过滤假突破。
+                  时间框架：T1 趋势周期定方向（默认 180 小时 ≈ 4H EMA 45 / 日线 EMA 8）+ T2 信号周期找机会（总监自动立意）；开启 T3 后，信号需连续成立 N 小时才入场，过滤假突破。
                 </div>
               </div>
             )}
