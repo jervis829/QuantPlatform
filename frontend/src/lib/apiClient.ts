@@ -5,6 +5,8 @@ import type {
   EvolveExistingResponse,
   EvolutionCycleConfigRequest,
   EvolutionCycleStatusResponse,
+  RealtimeShadowSessionResponse,
+  RealtimeShadowStartRequest,
   GlobalSearchResponse,
   HealthResponse,
   KillSwitchPreviewResponse,
@@ -212,6 +214,22 @@ export const quantApi = {
         body: JSON.stringify(body),
       }
     ),
+
+  startRealtimeShadow: (apiKey: string, body: RealtimeShadowStartRequest) =>
+    requestJson<RealtimeShadowSessionResponse>("/api/v1/runs/shadow/realtime/start", apiKey, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  stopRealtimeShadow: (apiKey: string, runId: string) =>
+    requestJson<{ run_id: string; status: string }>(
+      `/api/v1/runs/shadow/realtime/${encodeURIComponent(runId)}/stop`,
+      apiKey,
+      { method: "POST" }
+    ),
+
+  listRealtimeShadow: (apiKey: string) =>
+    requestJson<RealtimeShadowSessionResponse[]>("/api/v1/runs/shadow/realtime/active", apiKey),
 
   updateStrategyParams: (
     apiKey: string,

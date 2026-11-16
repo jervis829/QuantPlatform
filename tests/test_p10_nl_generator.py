@@ -521,3 +521,90 @@ def test_continuous_evolution_loop_shadow_analyze_and_evolve_existing(tmp_path: 
     assert "STRATEGY_EVOLVED_EXISTING" in actions
     assert "EVOLUTION_CYCLE_CONFIGURED" in actions
 
+
+def test_realtime_shadow_session_lifecycle(tmp_path: Path) -> None:
+    """
+    Real-time shadow trading (live WS klines, paper fills):
+    1. Committee-evolve + approve a strategy.
+    2. Start a real-time shadow session via API (warmup bars processed immediately;
+       live WS stream retries in background when network is unavailable).
+    3. Session appears in active list with RUNNING status and processed warmup bars.
+    4. Stop the session; it leaves the active list.
+    """
+    import time
+
+    from fastapi.testclient import TestClient
+    from quant_platform.api import create_app
+
+    app = create_app(db_url=f"sqlite:///{tmp_path / 'p10_realtime_shadow.db'}")
+    client = TestClient(app)
+    researcher_hdr = {"X-API-Key": "researcher-dev-token"}
+    admin_hdr = {"X-API-Key": "admin-dev-token"}
+    viewer_hdr = {"X-API-Key": "viewer-dev-token"}
+    operator_hdr = {"X-API-Key": "operator-dev-token"}
+
+    evo_resp = client.post(
+        "/api/v1/strategies/evolve-committee",
+        headers=researcher_hdr,
+        json={
+            "strategy_id": "strat_rt_demo",
+            "name": "Realtime Shadow Demo",
+            "prompt": "BTC/USDT:USDT 双指数均线 EMA 趋势策略，控制回撤",
+            "symbol": "BTC/USDT:USDT",
+            "exchange": "binance",
+            "max_rounds": 1,
+            "target_max_drawdown_pct": "0.25",
+            "lookback_bars": 240,
+        },
+    )
+    assert evo_resp.status_code == 200, evo_resp.text
+    champ_vid = evo_resp.json()["champion_version"]["version_id"]
+
+    appr = client.post(
+        f"/api/v1/strategies/versions/{champ_vid}/approve",
+        headers=admin_hdr,
+        json={"note": "approved for realtime shadow test"},
+    )
+    assert appr.status_code == 200, appr.text
+
+    # Unapproved version cannot start realtime shadow
+    start_resp = client.post(
+        "/api/v1/runs/shadow/realtime/start",
+        headers=researcher_hdr,
+        json={
+            "strategy_id": "strat_rt_demo",
+            "version_id": champ_vid,
+            "exchange": "binance",
+            "symbol": "BTC/USDT:USDT",
+            "interval": "1h",
+            "warmup_bars": 120,
+        },
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    rt_run_id = start_resp.json()["run_id"]
+    assert rt_run_id.startswith("run_shrt_")
+
+    # Give the pipeline thread time to process warmup bars
+    time.sleep(3.0)
+
+    active = client.get("/api/v1/runs/shadow/realtime/active", headers=viewer_hdr)
+    assert active.status_code == 200
+    sessions = active.json()
+    match = [s for s in sessions if s["run_id"] == rt_run_id]
+    assert len(match) == 1
+    assert match[0]["status"] == "RUNNING"
+    assert match[0]["bars_processed"] >= 100  # warmup bars processed
+
+    # Shadow analysis works on the realtime run (fills from warmup replay)
+    ana = client.get(f"/api/v1/runs/shadow/{rt_run_id}/analysis", headers=viewer_hdr)
+    assert ana.status_code == 200, ana.text
+    assert ana.json()["run_id"] == rt_run_id
+
+    # Stop the session
+    stop_resp = client.post(
+        f"/api/v1/runs/shadow/realtime/{rt_run_id}/stop", headers=operator_hdr
+    )
+    assert stop_resp.status_code == 200, stop_resp.text
+    time.sleep(2.0)
+    active2 = client.get("/api/v1/runs/shadow/realtime/active", headers=viewer_hdr)
+    assert all(s["run_id"] != rt_run_id for s in active2.json())

@@ -210,6 +210,31 @@ class EvolutionCycleStatusResponse(BaseModel):
     updated_ms: int
 
 
+class RealtimeShadowStartRequest(BaseModel):
+    strategy_id: str
+    version_id: str
+    exchange: str = "binance"
+    symbol: str = "ETH/USDT:USDT"
+    interval: str = "1h"
+    initial_usdt: str = "10000"
+    leverage: str = "2"
+    warmup_bars: int = Field(default=500, ge=0, le=5000)
+
+
+class RealtimeShadowSessionResponse(BaseModel):
+    run_id: str
+    strategy_id: str
+    version_id: str
+    exchange: str
+    symbol: str
+    interval: str
+    status: str
+    bars_processed: int = 0
+    live_bars_received: int = 0
+    started_at_ms: int | None = None
+    error_message: str | None = None
+
+
 class StrategyParamUpdateRequest(BaseModel):
     params: dict[str, Any]
 

@@ -47,6 +47,8 @@ from quant_platform.api.schemas import (
     EvolveExistingResponse,
     EvolutionCycleConfigRequest,
     EvolutionCycleStatusResponse,
+    RealtimeShadowSessionResponse,
+    RealtimeShadowStartRequest,
     ShadowAnalysisResponse,
     OrderFillsDrilldownResponse,
     PreflightAccountCheck,
@@ -143,6 +145,7 @@ from quant_platform.nl_generator import (
 from quant_platform.observability.metrics import PlatformMetrics
 from quant_platform.reconciliation import ThreeTierReconciler
 from quant_platform.shadow import ShadowBroker, ShadowSimulationParams
+from quant_platform.shadow.realtime import RealtimeShadowManager, RealtimeShadowSession
 from quant_platform.strategy import (
     ContainerStrategySandbox,
     StrategyVersionStore,
@@ -559,6 +562,7 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
     app.state.clock_skew_ms = 12
     app.state.run_progress = {}
     app.state.cancel_tokens = {}
+    app.state.realtime_shadow_manager = RealtimeShadowManager()
     app.state.active_run_tasks = {}
     app.state.ws_channels = {
         ("binance", "spot_market_ws"): {"healthy": True, "last_heartbeat_ms": wall_clock.now_ms()},
@@ -619,20 +623,35 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                                         .limit(1)
                                     ).scalar_one_or_none()
                                     if existing_shadow is None:
-                                        _run_shadow_replay_sync(
-                                            session=launch_session,
+                                        # Prefer REAL-TIME shadow (live WS klines);
+                                        # fall back to replay if WS unavailable.
+                                        raw_bars, _ = _resolve_dataset_for_strategy(
+                                            cycle.exchange, cycle.symbol, cycle.strategy_id
+                                        )
+                                        warmup = (
+                                            raw_bars[-cycle.lookback_bars :]
+                                            if len(raw_bars) > cycle.lookback_bars
+                                            else raw_bars
+                                        )
+                                        rt_sess = RealtimeShadowSession(
+                                            session_factory=sf,
                                             sandbox=sandbox,
                                             strategy_id=cycle.strategy_id,
                                             version_id=latest_ver.version_id,
                                             exchange=cycle.exchange,
                                             symbol=cycle.symbol,
+                                            interval="1h",
+                                            warmup_bars=warmup,
                                             initial_usdt=Decimal("10000"),
                                         )
+                                        rt_run_id = app.state.realtime_shadow_manager.start_session(rt_sess)
                                         ws_hub.publish_sync(
                                             {
                                                 "type": "shadow_run_auto_launched",
                                                 "strategy_id": cycle.strategy_id,
                                                 "version_id": latest_ver.version_id,
+                                                "run_id": rt_run_id,
+                                                "mode": "realtime",
                                             }
                                         )
                         except Exception:
@@ -1491,6 +1510,112 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             return ShadowAnalysisResponse(**rep.model_dump(mode="json"))
+
+    @app.post(
+        "/api/v1/runs/shadow/realtime/start", response_model=RealtimeShadowSessionResponse
+    )
+    def start_realtime_shadow(
+        req: RealtimeShadowStartRequest,
+        principal: ActorPrincipal = Depends(require_min_role(Role.RESEARCHER)),
+    ) -> RealtimeShadowSessionResponse:
+        """Start a REAL-TIME shadow session (live Binance WS klines, paper fills).
+
+        Unlike replay shadow runs, this consumes live market data as candles
+        close — exactly like live trading, but orders are simulated (no real
+        funds). The session runs continuously until stopped.
+        """
+        if app.state.maintenance_mode:
+            raise HTTPException(status_code=503, detail="Platform is in maintenance mode")
+        init_usdt = to_strict_decimal(req.initial_usdt, "initial_usdt")
+        lev = to_strict_decimal(req.leverage, "leverage")
+
+        with sf() as session:
+            store = StrategyVersionStore(session=session, sandbox=sandbox)
+            try:
+                ver = store.get_version(req.version_id)
+                store.get_strategy_meta(req.strategy_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if ver.approval_status != ApprovalStatus.APPROVED.value:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"APPROVAL_REQUIRED: Version {req.version_id} status is {ver.approval_status}",
+                )
+
+        # Warmup bars: recent history so indicators have state at live start
+        raw_bars, _ = _resolve_dataset_for_strategy(req.exchange, req.symbol, req.strategy_id)
+        warmup = raw_bars[-req.warmup_bars :] if req.warmup_bars > 0 else []
+
+        sess = RealtimeShadowSession(
+            session_factory=sf,
+            sandbox=sandbox,
+            strategy_id=req.strategy_id,
+            version_id=req.version_id,
+            exchange=req.exchange,
+            symbol=req.symbol,
+            interval=req.interval,
+            warmup_bars=warmup,
+            initial_usdt=init_usdt,
+            leverage=lev,
+        )
+        run_id = app.state.realtime_shadow_manager.start_session(sess)
+        with sf() as session:
+            append_audit_log(
+                session,
+                actor=principal.actor_id,
+                action="REALTIME_SHADOW_STARTED",
+                resource_type="run",
+                resource_id=run_id,
+                payload={
+                    "strategy_id": req.strategy_id,
+                    "version_id": req.version_id,
+                    "symbol": req.symbol,
+                    "interval": req.interval,
+                    "warmup_bars": len(warmup),
+                },
+                ts_ms=wall_clock.now_ms(),
+            )
+            session.commit()
+        return RealtimeShadowSessionResponse(
+            run_id=run_id,
+            strategy_id=req.strategy_id,
+            version_id=req.version_id,
+            exchange=req.exchange,
+            symbol=req.symbol,
+            interval=req.interval,
+            status="STARTING",
+        )
+
+    @app.post("/api/v1/runs/shadow/realtime/{run_id}/stop")
+    def stop_realtime_shadow(
+        run_id: str,
+        principal: ActorPrincipal = Depends(require_min_role(Role.OPERATOR)),
+    ) -> dict[str, Any]:
+        stopped = app.state.realtime_shadow_manager.stop_session(run_id)
+        if not stopped:
+            raise HTTPException(status_code=404, detail=f"Realtime shadow session {run_id} not found")
+        with sf() as session:
+            append_audit_log(
+                session,
+                actor=principal.actor_id,
+                action="REALTIME_SHADOW_STOPPED",
+                resource_type="run",
+                resource_id=run_id,
+                payload={},
+                ts_ms=wall_clock.now_ms(),
+            )
+            session.commit()
+        return {"run_id": run_id, "status": "STOPPING"}
+
+    @app.get("/api/v1/runs/shadow/realtime/active")
+    def list_realtime_shadow(
+        _: ActorPrincipal = Depends(require_min_role(Role.VIEWER)),
+    ) -> list[RealtimeShadowSessionResponse]:
+        app.state.realtime_shadow_manager.prune_finished()
+        return [
+            RealtimeShadowSessionResponse(**item)
+            for item in app.state.realtime_shadow_manager.list_active()
+        ]
 
     @app.post(
         "/api/v1/strategies/{strategy_id}/evolution-cycle",

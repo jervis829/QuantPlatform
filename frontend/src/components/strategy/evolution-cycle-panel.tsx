@@ -10,9 +10,11 @@ import {
   ChevronUp,
   Loader2,
   Play,
+  Radio,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Square,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
@@ -21,6 +23,7 @@ import { usePreferences } from "../../lib/preferences-context";
 import { formatUtcTimestamp } from "../../lib/formatters";
 import type {
   EvolutionCycleStatusResponse,
+  RealtimeShadowSessionResponse,
   ShadowAnalysisResponse,
 } from "../../types/openapi.generated";
 
@@ -92,6 +95,8 @@ export function EvolutionCyclePanel({
   const [evolveNote, setEvolveNote] = useState<string | null>(null);
   const [intervalDays, setIntervalDays] = useState(3);
   const [savingCycle, setSavingCycle] = useState(false);
+  const [startingRt, setStartingRt] = useState(false);
+  const [stoppingRt, setStoppingRt] = useState<string | null>(null);
 
   const cycleQuery = useQuery({
     queryKey: ["evolution-cycle", strategyId],
@@ -106,8 +111,46 @@ export function EvolutionCyclePanel({
     retry: false,
   });
 
+  const rtQuery = useQuery({
+    queryKey: ["realtime-shadow-active"],
+    queryFn: () => quantApi.listRealtimeShadow(apiKey),
+    refetchInterval: 5000,
+    retry: false,
+  });
+  const rtSessions: RealtimeShadowSessionResponse[] = rtQuery.data ?? [];
+
   const cycle: EvolutionCycleStatusResponse | undefined = cycleQuery.data;
   const shadow: ShadowAnalysisResponse | undefined = shadowQuery.data;
+
+  const handleStartRt = useCallback(async () => {
+    setStartingRt(true);
+    try {
+      await quantApi.startRealtimeShadow(apiKey, {
+        strategy_id: strategyId,
+        version_id: latestVersionId,
+        exchange: cycle?.exchange ?? "binance",
+        symbol: cycle?.symbol ?? "ETH/USDT:USDT",
+        interval: "1h",
+        warmup_bars: 500,
+      });
+      queryClient.invalidateQueries({ queryKey: ["realtime-shadow-active"] });
+    } finally {
+      setStartingRt(false);
+    }
+  }, [apiKey, strategyId, latestVersionId, cycle, queryClient]);
+
+  const handleStopRt = useCallback(
+    async (runId: string) => {
+      setStoppingRt(runId);
+      try {
+        await quantApi.stopRealtimeShadow(apiKey, runId);
+        queryClient.invalidateQueries({ queryKey: ["realtime-shadow-active"] });
+      } finally {
+        setStoppingRt(null);
+      }
+    },
+    [apiKey, queryClient]
+  );
 
   const handleEvolve = useCallback(async () => {
     setEvolving(true);
@@ -250,6 +293,57 @@ export function EvolutionCyclePanel({
               {evolveNote}
             </div>
           )}
+
+          {/* Real-time shadow (live WS klines, paper fills) */}
+          <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Radio className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="text-xs font-medium text-zinc-300">实时模拟盘（币安实时 K 线 · 纸面成交）</span>
+              <Button size="sm" variant="outline" onClick={handleStartRt} disabled={startingRt}>
+                {startingRt ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                <span>{startingRt ? "启动中…" : "启动实时模拟盘"}</span>
+              </Button>
+              <span className="text-[11px] text-zinc-500">
+                需当前版本已批准；启动后实时接收币安 K 线，成交为纸面模拟
+              </span>
+            </div>
+            {rtSessions.length > 0 && (
+              <div className="space-y-1.5">
+                {rtSessions.map((s) => (
+                  <div
+                    key={s.run_id}
+                    className="flex flex-wrap items-center gap-2 rounded border border-emerald-500/25 bg-emerald-950/20 px-2.5 py-1.5 text-xs"
+                  >
+                    <span className="relative flex h-2 w-2">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                    </span>
+                    <span className="font-mono text-zinc-200">{s.run_id}</span>
+                    <span className="text-zinc-400">
+                      {s.symbol} · {s.interval} · 已处理 {s.bars_processed} 根 K 线（实时 {s.live_bars_received} 根）
+                    </span>
+                    <span className="rounded-full border border-emerald-500/40 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                      {s.status}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      onClick={() => handleStopRt(s.run_id)}
+                      disabled={stoppingRt === s.run_id}
+                    >
+                      {stoppingRt === s.run_id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Square className="h-3 w-3" />
+                      )}
+                      <span>停止</span>
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Shadow analysis */}
           {latestShadowRunId ? (

@@ -402,6 +402,31 @@ export interface RateLimitStatusItem {
   recent_429_count: number;
 }
 
+export interface RealtimeShadowSessionResponse {
+  run_id: string;
+  strategy_id: string;
+  version_id: string;
+  exchange: string;
+  symbol: string;
+  interval: string;
+  status: string;
+  bars_processed?: number;
+  live_bars_received?: number;
+  started_at_ms?: number | null;
+  error_message?: string | null;
+}
+
+export interface RealtimeShadowStartRequest {
+  strategy_id: string;
+  version_id: string;
+  exchange?: string;
+  symbol?: string;
+  interval?: string;
+  initial_usdt?: string;
+  leverage?: string;
+  warmup_bars?: number;
+}
+
 export interface ReconciliationDetailResponse {
   report_id: string;
   tier: string;
@@ -762,6 +787,9 @@ export type ApiEndpointPath =
   | "/api/v1/runs/backtest/{run_id}/walk-forward"
   | "/api/v1/runs/launch"
   | "/api/v1/runs/preflight"
+  | "/api/v1/runs/shadow/realtime/active"
+  | "/api/v1/runs/shadow/realtime/start"
+  | "/api/v1/runs/shadow/realtime/{run_id}/stop"
   | "/api/v1/runs/shadow/{run_id}/analysis"
   | "/api/v1/runs/{env}/{run_id}/cancel"
   | "/api/v1/runs/{env}/{run_id}/chart-data"
