@@ -724,12 +724,21 @@ def create_app(db_url: str | None = None, metrics: PlatformMetrics | None = None
                                 shadow_report=shadow_dict,
                             )
                             champ_ver = evo["champion_version"]
-                            cycle.last_evolved_ms = wall_clock.now_ms()
-                            cycle.last_shadow_run_id = latest_shadow.run_id
-                            cycle.last_champion_version_id = champ_ver.version_id
-                            cycle.last_status = "EVOLVED"
-                            cycle.last_error = None
-                            cycle.updated_ms = wall_clock.now_ms()
+                            # Re-fetch cycle inside THIS session: the outer `cycle`
+                            # object is detached (loaded in a closed session), so
+                            # mutating it would never be flushed by this commit.
+                            cycle_row = session.execute(
+                                select(EvolutionCycleRecord).where(
+                                    EvolutionCycleRecord.strategy_id == cycle.strategy_id
+                                )
+                            ).scalar_one_or_none()
+                            if cycle_row is not None:
+                                cycle_row.last_evolved_ms = wall_clock.now_ms()
+                                cycle_row.last_shadow_run_id = latest_shadow.run_id
+                                cycle_row.last_champion_version_id = champ_ver.version_id
+                                cycle_row.last_status = "EVOLVED"
+                                cycle_row.last_error = None
+                                cycle_row.updated_ms = wall_clock.now_ms()
                             append_audit_log(
                                 session,
                                 actor="evolution_cycle_scheduler",

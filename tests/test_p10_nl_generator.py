@@ -608,3 +608,82 @@ def test_realtime_shadow_session_lifecycle(tmp_path: Path) -> None:
     time.sleep(2.0)
     active2 = client.get("/api/v1/runs/shadow/realtime/active", headers=viewer_hdr)
     assert all(s["run_id"] != rt_run_id for s in active2.json())
+
+
+def test_evolution_cycle_state_persists_across_sessions(tmp_path: Path) -> None:
+    """
+    Regression test for the detached-session bug that caused runaway version
+    creation (95 versions): the scheduler loaded EvolutionCycleRecord in one
+    session, mutated it in another, and the commit never flushed because the
+    object was detached. last_evolved_ms stayed NULL, so the interval gate
+    never engaged and evolution fired every 60s tick.
+
+    This test reproduces the scheduler's session pattern and proves the
+    re-fetch-in-same-session fix persists cycle state.
+    """
+    from sqlalchemy import select
+
+    from quant_platform.db.schema import EvolutionCycleRecord
+    from quant_platform.db.session import build_engine, build_session_factory, init_db
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'cycle_persist.db'}")
+    init_db(engine)
+    sf = build_session_factory(engine)
+
+    # Configure a cycle
+    with sf() as session:
+        session.add(
+            EvolutionCycleRecord(
+                strategy_id="strat_persist",
+                enabled=True,
+                interval_days=3,
+                exchange="binance",
+                symbol="ETH/USDT:USDT",
+                max_rounds=2,
+                created_ms=1_000,
+                updated_ms=1_000,
+            )
+        )
+        session.commit()
+
+    # Simulate scheduler: load cycle in session A, close A
+    with sf() as session_a:
+        cycles = list(
+            session_a.execute(
+                select(EvolutionCycleRecord).where(EvolutionCycleRecord.enabled.is_(True))
+            )
+            .scalars()
+            .all()
+        )
+    detached_cycle = cycles[0]
+    assert detached_cycle.last_evolved_ms is None
+
+    # Simulate evolution in session B with the FIX: re-fetch before mutating
+    with sf() as session_b:
+        cycle_row = session_b.execute(
+            select(EvolutionCycleRecord).where(
+                EvolutionCycleRecord.strategy_id == detached_cycle.strategy_id
+            )
+        ).scalar_one_or_none()
+        assert cycle_row is not None
+        cycle_row.last_evolved_ms = 2_000
+        cycle_row.last_shadow_run_id = "run_sh_test"
+        cycle_row.last_status = "EVOLVED"
+        cycle_row.updated_ms = 2_000
+        session_b.commit()
+
+    # Verify persistence in a fresh session
+    with sf() as session_c:
+        persisted = session_c.execute(
+            select(EvolutionCycleRecord).where(
+                EvolutionCycleRecord.strategy_id == "strat_persist"
+            )
+        ).scalar_one_or_none()
+        assert persisted is not None
+        assert persisted.last_evolved_ms == 2_000
+        assert persisted.last_shadow_run_id == "run_sh_test"
+        assert persisted.last_status == "EVOLVED"
+
+    # Interval gate now engages: 2000 + 3 days > now(2500) -> not due
+    interval_ms = 3 * 86_400_000
+    assert 2_500 - persisted.last_evolved_ms < interval_ms  # gate blocks re-evolution
