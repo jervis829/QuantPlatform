@@ -515,6 +515,16 @@ function StrategyDetailInner() {
         }}
       />
 
+      {/* Continuous Evolution Loop: shadow -> analyze -> evolve -> repeat */}
+      <EvolutionCyclePanel
+        strategyId={strategyId}
+        latestVersionId={detail.latest_version.version_id}
+        latestShadowRunId={allRuns.find((r) => r.env === "shadow")?.run_id ?? null}
+        onEvolved={(vid) => {
+          setSelectedVersionId(vid);
+        }}
+      />
+
       {/* ===================================================================== */}
       {/* DEEP WORKSPACE ZONES: CONFIG · CODE · RUNS · LOGS                     */}
       {/* ===================================================================== */}
