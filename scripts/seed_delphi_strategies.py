@@ -964,6 +964,25 @@ def main() -> None:
                     "initial_usdt": "10000",
                     "leverage": "2",
                     "lookback_bars": 8760,
+                    "trend_lookback": 180,
+                    "entry_refinement": True,
+                    "entry_lookback": 5,
+                },
+            )
+        else:
+            # Refresh existing demo with current code (new T1/T2/T3 param titles)
+            evo_resp = c.post(
+                "/api/v1/strategies/strat_eth_committee_demo/evolve",
+                json={
+                    "prompt": "刷新演示策略：顺大势通道突破，趋势周期180，入场确认",
+                    "symbol": "ETH/USDT:USDT",
+                    "exchange": "binance",
+                    "max_rounds": 2,
+                    "target_max_drawdown_pct": "0.25",
+                    "lookback_bars": 8760,
+                    "trend_lookback": 180,
+                    "entry_refinement": True,
+                    "entry_lookback": 5,
                 },
             )
             evo_resp.raise_for_status()
